@@ -25,7 +25,7 @@ export function PostRow({ post, onClick }: PostRowProps) {
     >
       {/* Date */}
       <td className="px-4 py-3 text-sm text-zinc-400 whitespace-nowrap">
-        {format(new Date(post.postedAt), "MMM d")}
+        {post.postedAt ? format(new Date(post.postedAt), "MMM d") : "—"}
       </td>
 
       {/* LinkedIn post preview */}

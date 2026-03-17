@@ -11,7 +11,8 @@ export function formatDate(date: Date): string {
   return format(date, "MMM d, yyyy")
 }
 
-export function truncate(text: string, maxLen: number): string {
+export function truncate(text: string | null | undefined, maxLen: number): string {
+  if (!text) return ""
   if (text.length <= maxLen) return text
   return text.slice(0, maxLen - 3) + "..."
 }
