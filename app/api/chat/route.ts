@@ -63,13 +63,13 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error"
     // Distinguish API key errors from other failures
-    if (message.includes("ANTHROPIC_API_KEY")) {
+    if (message.includes("OPENROUTER_API_KEY")) {
       return NextResponse.json(
-        { error: "Claude API not configured — set ANTHROPIC_API_KEY in .env.local" },
+        { error: "OpenRouter API not configured — set OPENROUTER_API_KEY in .env.local" },
         { status: 503 }
       )
     }
-    console.error("[api/chat] Claude API error:", message)
+    console.error("[api/chat] OpenRouter API error:", message)
     return NextResponse.json(
       { error: `Claude API call failed: ${message}` },
       { status: 502 }

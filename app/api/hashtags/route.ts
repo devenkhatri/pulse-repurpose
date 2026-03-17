@@ -54,13 +54,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ suggestions })
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error"
-    if (message.includes("ANTHROPIC_API_KEY")) {
+    if (message.includes("OPENROUTER_API_KEY")) {
       return NextResponse.json(
-        { error: "Claude API not configured — set ANTHROPIC_API_KEY in .env.local" },
+        { error: "OpenRouter API not configured — set OPENROUTER_API_KEY in .env.local" },
         { status: 503 }
       )
     }
-    console.error("[api/hashtags] Claude API error:", message)
+    console.error("[api/hashtags] OpenRouter API error:", message)
     return NextResponse.json(
       { error: `Hashtag suggestion failed: ${message}` },
       { status: 502 }
