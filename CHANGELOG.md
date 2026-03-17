@@ -4,6 +4,21 @@ All changes are recorded here in append-only order after every session.
 
 ---
 
+## Session 4 — n8n Webhook Layer + Trigger/Callback Routes
+**Date:** 2026-03-17
+
+### Added
+- `lib/anthropic.ts` — generateImagePrompts (Claude direct, pre-webhook), chatWithAI (interactive edits), generateHashtagSuggestions; model: claude-sonnet-4-5-20251101
+- `lib/n8n.ts` — fireContentRepurposeWebhook (5s timeout), fireImageRepurposeWebhook (5s), firePublishWebhook (10s)
+- `app/api/trigger/repurpose/route.ts` — POST: fetches post + brand voice + hashtag bank, writes _source.md, fires content repurpose webhook
+- `app/api/trigger/images/route.ts` — POST: fetches post + brand voice, calls generateImagePrompts (Claude), writes prompts to Sheet, fires image repurpose webhook
+- `app/api/callback/repurpose/route.ts` — POST: n8n calls here when text generation done; re-fetches post from Sheet, writes platform .md files
+- `app/api/callback/images/route.ts` — POST: n8n calls here when images done; updates image_url/image_prompt frontmatter in content files
+- `app/api/publish/route.ts` — POST: validates approved status, fires publish webhook, updates Sheet + content file status
+- `app/api/test-webhooks/route.ts` — GET (config status) / POST (ping all 4 URLs); dev-only, blocked in production
+
+---
+
 ## Session 3 — Brand Voice + Hashtag Bank + Settings Page
 **Date:** 2026-03-17
 
