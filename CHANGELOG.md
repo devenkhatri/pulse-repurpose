@@ -1,0 +1,51 @@
+# Changelog
+
+All changes are recorded here in append-only order after every session.
+
+---
+
+## Session 2 — Google Sheets Layer + Posts API + Content Store
+**Date:** 2026-03-17
+
+### Added
+- `lib/n8n-sheet.ts` — typed Sheet webhook helper: getAllPosts, getPostById, updatePlatformVariant, updateMultiplePlatforms, writeContentPrompts, writeImagePrompts, updateStatus (7 actions, 15s read / 10s write timeouts)
+- `lib/content-store.ts` — file system helper for content/ directory: writeSourceFile, writePlatformFile, readPlatformFile, readAllPlatformFiles, updatePlatformFileMeta, listContentPostIds (uses gray-matter for frontmatter)
+- `app/api/posts/route.ts` — GET all posts with query filters (status, platform, from, to) via n8n Sheet webhook
+- `app/api/posts/[id]/route.ts` — GET single post + PATCH single/multi platform variants; syncs content files on patch
+- `app/api/content/route.ts` — GET lists all post IDs with content folders
+- `app/api/content/[postId]/route.ts` — GET all platform files for a post as structured JSON
+- `app/api/content/[postId]/[platform]/route.ts` — GET single platform content file
+
+### Modified
+- `lib/platform-rules.ts` — expanded PlatformRule with full spec: color, maxThreadTweets, tone, formatRules, avoidPatterns
+- `types/index.ts` — removed PlatformRule interface (now defined in lib/platform-rules.ts)
+
+---
+
+## Session 1 — Project Setup, Types, Configuration
+**Date:** 2026-03-17
+
+### Added
+- Next.js 14 App Router project scaffold (TypeScript, Tailwind, dark theme)
+- All dependencies: zustand, react-hook-form, @hookform/resolvers, zod, axios, date-fns, sonner, lucide-react, @anthropic-ai/sdk, gray-matter, minimatch, @dnd-kit/*, @fullcalendar/*
+- `tailwind.config.ts` — dark mode class, CSS var color extensions, Geist font
+- `app/globals.css` — design system CSS variables (bg-primary #0A0A0A, accent #7C3AED, etc.)
+- `app/layout.tsx` — root layout with Geist font, Sidebar, Toaster
+- `app/page.tsx` — redirects to /dashboard
+- Page stubs: `/dashboard`, `/repurpose`, `/calendar`, `/settings`
+- `components/layout/Sidebar.tsx` — fixed 240px nav with active state
+- `components/layout/TopBar.tsx` — page title header
+- `components/shared/PlatformIcon.tsx` — platform badge component
+- `components/shared/LoadingSpinner.tsx` — animated spinner
+- `components/shared/ConfirmDialog.tsx` — AlertDialog wrapper
+- shadcn/ui components: button, input, textarea, badge, card, label, separator, tabs, select, dialog, alert-dialog, popover, scroll-area
+- `types/index.ts` — all TypeScript interfaces (Platform, PostStatus, LinkedInPost, etc.)
+- `lib/env.ts` — env var validation with console.warn
+- `lib/utils.ts` — cn, formatDate, truncate, platformColor, sleep
+- `lib/platform-rules.ts` — PLATFORM_RULES for all 5 platforms
+- `stores/postsStore.ts` — Zustand store shell
+- `stores/repurposeStore.ts` — Zustand store shell
+- `stores/settingsStore.ts` — Zustand store shell
+- `config/brand-voice.json` — default brand voice profile
+- `config/hashtag-bank.json` — empty hashtag bank
+- `content/.gitkeep` — content directory tracked in git
