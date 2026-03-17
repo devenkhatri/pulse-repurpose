@@ -3,6 +3,7 @@
 import { useEffect, useCallback } from "react"
 import { TopBar } from "@/components/layout/TopBar"
 import { PostsTable } from "@/components/dashboard/PostsTable"
+import { SystemPanel } from "@/components/dashboard/SystemPanel"
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner"
 import { usePostsStore } from "@/stores/postsStore"
 import { isThisWeek, parseISO } from "date-fns"
@@ -119,6 +120,7 @@ export default function DashboardPage() {
     <div className="flex flex-col h-full">
       <TopBar title="Dashboard" />
       <div className="flex-1 p-6 overflow-auto">
+        <SystemPanel />
         <StatsBar />
         <PostsTable
           posts={posts}

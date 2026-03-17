@@ -4,6 +4,16 @@ All changes are recorded here in append-only order after every session.
 
 ---
 
+## Session 10 — AOS + Auto-Documentation System
+**Date:** 2026-03-17
+
+### Type: feature-added
+### Files changed: SOUL.md, Heartbeat.md, memory/USER.md, memory/MEMORY.md, memory/learnings.md, skills/repurpose.md, skills/cron.md, lib/docs-sync.ts, app/api/docs/sync/route.ts, app/api/docs/status/route.ts, app/api/heartbeat/route.ts, app/api/cron/route.ts, app/api/memory/route.ts, app/api/memory/update/route.ts, components/dashboard/SystemPanel.tsx, app/dashboard/page.tsx, app/api/posts/[id]/route.ts
+### Summary: Implemented the full AOS (Agentic Operating System) layer. Created all six memory files (SOUL.md, Heartbeat.md, USER.md, MEMORY.md, learnings.md, and skill runbooks). Added auto-documentation system (lib/docs-sync.ts + docs API routes). Added cron route executing 8 operations. Added heartbeat API + dashboard SystemPanel. Added learning capture on approval/edit events.
+### Docs affected: README.md, SOUL.md, skills/repurpose.md, skills/cron.md, Heartbeat.md
+
+---
+
 ## Session 5 — Dashboard Page
 **Date:** 2026-03-17
 

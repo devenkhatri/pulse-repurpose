@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
 import { getPostById, updatePlatformVariant, updateMultiplePlatforms } from "@/lib/n8n-sheet"
 import { updatePlatformFileMeta } from "@/lib/content-store"
+import { appendToLearnings, appendToMemory } from "@/lib/docs-sync"
 import type { Platform } from "@/types"
 
 // ---------------------------------------------------------------------------
@@ -131,6 +132,17 @@ export async function PATCH(
         image_url: variant.imageUrl,
         image_prompt: variant.imagePrompt,
       })
+
+      // Learning capture: record approval/edit events
+      if (variant.status === "approved") {
+        const observation = variant.isEdited
+          ? `${platform}: variant for ${postId} approved after user edits (isEdited=true). Confidence: observe.`
+          : `${platform}: variant for ${postId} approved without edits. Confidence+1.`
+        await appendToLearnings(platform, observation).catch(() => {})
+        await appendToMemory(
+          `${new Date().toISOString()} ${platform} variant for ${postId} ${variant.isEdited ? "approved (with edits)" : "approved (no edits)"}.`
+        ).catch(() => {})
+      }
     } else {
       return NextResponse.json(
         { error: "Provide either (platform + variant) or variants object" },
