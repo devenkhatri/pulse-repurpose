@@ -4,6 +4,22 @@ All changes are recorded here in append-only order after every session.
 
 ---
 
+## Session 5 — Dashboard Page
+**Date:** 2026-03-17
+
+### Added
+- `components/dashboard/PostsTable.tsx` — full table with client-side filters: platform pill toggles (All / Twitter / Threads / Instagram / Facebook / Skool), status dropdown, date range picker; clear filter button; empty states for no posts and no filter matches
+- `components/dashboard/PostRow.tsx` — table row with formatted date, 80-char LinkedIn preview, per-platform StatusBadge, Repurpose and View action buttons
+- `components/dashboard/StatusBadge.tsx` — color-coded badges: pending (gray), approved (blue), scheduled (amber), published (green), failed (red)
+- `components/dashboard/PlatformStatusGrid.tsx` — compact and full-detail platform grid used in slide-over
+- `components/dashboard/PostSlideOver.tsx` — fixed right-side panel with full LinkedIn post text, image preview, per-platform generated text + hashtags + image + schedule time, per-platform quick approve/reject buttons, Escape key close, "Edit in Repurpose" navigation
+
+### Modified
+- `app/dashboard/page.tsx` — full dashboard page: StatsBar (total posts, repurposed, published this week, pending approval), PostsTable integration, approve/reject handlers with Sheet PATCH + Zustand update + toast notification
+- `stores/postsStore.ts` — implemented fetchPosts with optional filters (status, platform, from/to), implemented updateVariantStatus optimistic updater
+
+---
+
 ## Session 4 — n8n Webhook Layer + Trigger/Callback Routes
 **Date:** 2026-03-17
 
