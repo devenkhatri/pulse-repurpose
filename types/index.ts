@@ -70,6 +70,33 @@ export interface ChatMessage {
   timestamp: string
 }
 
+export interface ContentPromptOutput {
+  systemPrompt: string
+  userPrompt: string
+  context: {
+    platformLabel: string
+    maxChars: number
+    hashtagCount: { min: number; max: number }
+    threadEnabled: boolean
+    learningsApplied: string[]
+  }
+}
+
+export interface ImagePromptOutput {
+  prompt: string
+  sourceImageUrl: string | null
+  styleDirectives: {
+    aspectRatio: string
+    width: number
+    height: number
+    mood: string
+    colorTone: string
+    composition: string
+    textOverlay: false
+  }
+  negativePrompt: string
+}
+
 // Webhook 1: App → n8n content repurpose workflow
 export interface ContentRepurposeWebhookPayload {
   postId: string
@@ -87,14 +114,14 @@ export interface ContentRepurposeWebhookPayload {
     platforms: Platform[]
     topicPillar: string | null
   }>
+  contentPrompts?: Partial<Record<Platform, ContentPromptOutput>>  // Only sent when re-generating with stored prompts; absent on first-time generation
   callbackUrl: string               // App's /api/callback/repurpose endpoint
 }
 
 // Webhook 2: App → n8n image repurpose workflow
 export interface ImageRepurposeWebhookPayload {
   postId: string
-  imagePrompts: Partial<Record<Platform, string>>  // Per-platform image prompts
-  imageSizes: Partial<Record<Platform, { width: number; height: number }>>
+  imagePayloads: Partial<Record<Platform, ImagePromptOutput>>  // Full per-platform image prompt objects
   callbackUrl: string               // App's /api/callback/images endpoint
 }
 

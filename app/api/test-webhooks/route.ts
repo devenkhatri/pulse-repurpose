@@ -74,6 +74,6 @@ export async function GET(_req: NextRequest) {
       imageRepurpose: { configured: !!env.N8N_IMAGE_REPURPOSE_WEBHOOK_URL, url: mask(env.N8N_IMAGE_REPURPOSE_WEBHOOK_URL) },
       publish: { configured: !!env.N8N_PUBLISH_WEBHOOK_URL, url: mask(env.N8N_PUBLISH_WEBHOOK_URL) },
     },
-    anthropic: { configured: !!(env.ANTHROPIC_API_KEY && env.ANTHROPIC_API_KEY !== "your_key_here") },
+    openrouter: { configured: !!env.OPENROUTER_API_KEY, model: env.OPENROUTER_MODEL },
   })
 }

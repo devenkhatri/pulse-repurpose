@@ -7,6 +7,7 @@ import { PlatformIcon } from "@/components/shared/PlatformIcon"
 import { StatusBadge } from "@/components/dashboard/StatusBadge"
 import { ApproveButton } from "@/components/repurpose/ApproveButton"
 import { ImagePreview } from "@/components/repurpose/ImagePreview"
+import { HashtagSuggestions } from "@/components/repurpose/HashtagSuggestions"
 import { useRepurposeStore } from "@/stores/repurposeStore"
 import { PLATFORM_RULES } from "@/lib/platform-rules"
 import { cn } from "@/lib/utils"
@@ -19,6 +20,8 @@ interface PlatformCardProps {
   localVariant: RepurposeVariantDraft | undefined
   isTextGenerating: boolean
   isImageGenerating: boolean
+  isActive: boolean
+  onFocus: (platform: Platform) => void
   onRefresh: () => Promise<void>
 }
 
@@ -29,10 +32,11 @@ export function PlatformCard({
   localVariant,
   isTextGenerating,
   isImageGenerating,
+  isActive,
+  onFocus,
   onRefresh,
 }: PlatformCardProps) {
-  const { setVariantText, setVariantApproved, setVariantHashtags, addSuggestedHashtag } =
-    useRepurposeStore()
+  const { setVariantText, setVariantApproved, setVariantHashtags } = useRepurposeStore()
 
   const [scheduledAt, setScheduledAt] = useState<string>("")
   const [isPublishing, setIsPublishing] = useState(false)
@@ -58,7 +62,10 @@ export function PlatformCard({
 
   if (isTextGenerating && !platformVariant.text) {
     return (
-      <div className="bg-[#161616] border border-[#2A2A2A] rounded-xl p-4">
+      <div
+        className="bg-[#161616] border border-[#2A2A2A] rounded-xl p-4 cursor-pointer"
+        onClick={() => onFocus(platform)}
+      >
         <div className="flex items-center gap-2 mb-3">
           <PlatformIcon platform={platform} size="sm" />
           <span className="text-sm font-medium text-[#888888]">{rules.label}</span>
@@ -92,8 +99,7 @@ export function PlatformCard({
         },
       })
       await onRefresh()
-    } catch (_err) {
-      // Revert on error
+    } catch {
       setVariantApproved(platform, !newApproved)
       toast.error("Failed to update approval status")
     } finally {
@@ -109,7 +115,7 @@ export function PlatformCard({
       })
       toast.success("Changes saved")
       await onRefresh()
-    } catch (_err) {
+    } catch {
       toast.error("Failed to save changes")
     }
   }
@@ -135,10 +141,7 @@ export function PlatformCard({
           ? err.response.data.error
           : "Publish failed"
       toast.error(msg, {
-        action: {
-          label: "Retry",
-          onClick: handlePublish,
-        },
+        action: { label: "Retry", onClick: handlePublish },
       })
     } finally {
       setIsPublishing(false)
@@ -162,10 +165,14 @@ export function PlatformCard({
   return (
     <div
       className={cn(
-        "bg-[#161616] border rounded-xl p-4 space-y-3 transition-colors",
-        isEdited && "border-amber-500/30",
-        !isEdited && "border-[#2A2A2A]"
+        "bg-[#161616] border rounded-xl p-4 space-y-3 transition-all cursor-pointer",
+        isActive
+          ? "border-[#7C3AED]/60 ring-1 ring-[#7C3AED]/20"
+          : isEdited
+          ? "border-amber-500/30 hover:border-amber-500/50"
+          : "border-[#2A2A2A] hover:border-[#3A3A3A]"
       )}
+      onClick={() => onFocus(platform)}
     >
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -177,20 +184,31 @@ export function PlatformCard({
               edited
             </span>
           )}
+          {isActive && (
+            <span className="text-[10px] text-[#7C3AED] bg-[#7C3AED]/10 px-1.5 py-0.5 rounded">
+              active
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={platformVariant.status} />
           <ApproveButton
             isApproved={isApproved}
             disabled={!text || isApproving || isPublished}
-            onClick={handleApprove}
+            onClick={(e) => {
+              e.stopPropagation()
+              handleApprove()
+            }}
           />
         </div>
       </div>
 
       {/* Textarea */}
-      {text || !isTextGenerating ? (
-        <div className="space-y-1">
+      {(text || !isTextGenerating) && (
+        <div
+          className="space-y-1"
+          onClick={(e) => e.stopPropagation()}
+        >
           <textarea
             ref={textareaRef}
             value={text}
@@ -217,18 +235,23 @@ export function PlatformCard({
             </span>
           </div>
         </div>
-      ) : null}
+      )}
 
       {/* Image */}
-      <ImagePreview
-        imageUrl={platformVariant.imageUrl}
-        isGenerating={isImageGenerating && !platformVariant.imageUrl}
-        platform={platform}
-      />
+      <div onClick={(e) => e.stopPropagation()}>
+        <ImagePreview
+          imageUrl={platformVariant.imageUrl}
+          isGenerating={isImageGenerating && !platformVariant.imageUrl}
+          platform={platform}
+        />
+      </div>
 
       {/* Hashtags */}
       {rules.hashtagCount.max > 0 && (
-        <div className="space-y-2">
+        <div
+          className="space-y-2"
+          onClick={(e) => e.stopPropagation()}
+        >
           <p className="text-xs text-[#555555] uppercase tracking-wider">
             Hashtags ({hashtags.length}/{rules.hashtagCount.max})
           </p>
@@ -268,12 +291,25 @@ export function PlatformCard({
               </div>
             )}
           </div>
+
+          {/* AI hashtag suggestions */}
+          {!isPublished && text && (
+            <HashtagSuggestions
+              platform={platform}
+              postText={text}
+              existingHashtags={hashtags}
+              maxHashtags={rules.hashtagCount.max}
+            />
+          )}
         </div>
       )}
 
       {/* Publish section — shown after approval */}
       {isApproved && !isPublished && (
-        <div className="pt-2 border-t border-[#2A2A2A] space-y-2">
+        <div
+          className="pt-2 border-t border-[#2A2A2A] space-y-2"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="flex items-center gap-2">
             <input
               type="datetime-local"
@@ -287,11 +323,7 @@ export function PlatformCard({
               disabled={isPublishing}
               className="px-3 py-1.5 text-xs bg-[#7C3AED] hover:bg-[#6D28D9] text-white rounded-lg transition-colors disabled:opacity-60"
             >
-              {isPublishing
-                ? "Publishing..."
-                : scheduledAt
-                ? "Schedule"
-                : "Publish now"}
+              {isPublishing ? "Publishing..." : scheduledAt ? "Schedule" : "Publish now"}
             </button>
           </div>
         </div>

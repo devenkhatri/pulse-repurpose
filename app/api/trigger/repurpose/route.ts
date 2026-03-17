@@ -80,8 +80,10 @@ export async function POST(req: NextRequest) {
     })
 
     if (!result.success) {
+      const errMsg = result.error ?? "Webhook fire failed"
+      console.error("[trigger/repurpose] n8n webhook error:", errMsg)
       return NextResponse.json(
-        { success: false, error: result.error ?? "Webhook fire failed" },
+        { success: false, error: `n8n webhook: ${errMsg}` },
         { status: 502 }
       )
     }
@@ -89,6 +91,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true })
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error"
+    console.error("[trigger/repurpose] Unexpected error:", message)
     return NextResponse.json(
       { success: false, error: message },
       { status: 500 }

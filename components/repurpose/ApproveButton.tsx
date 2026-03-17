@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
 interface ApproveButtonProps {
   isApproved: boolean
   disabled?: boolean
-  onClick: () => void
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void
 }
 
 export function ApproveButton({ isApproved, disabled, onClick }: ApproveButtonProps) {

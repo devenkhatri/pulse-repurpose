@@ -8,11 +8,27 @@ import { TopBar } from "@/components/layout/TopBar"
 import { SourcePostPanel } from "@/components/repurpose/SourcePostPanel"
 import { PlatformCard } from "@/components/repurpose/PlatformCard"
 import { GenerationStatusPanel } from "@/components/repurpose/GenerationStatusPanel"
+import { AIChatSidebar } from "@/components/repurpose/AIChatSidebar"
 import { useRepurposeStore } from "@/stores/repurposeStore"
 import type { LinkedInPost, Platform } from "@/types"
 
 const POLL_INTERVAL_MS = 3000
 const POLL_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
+
+// ---------------------------------------------------------------------------
+// Helper — extract a human-readable error from an axios catch
+// ---------------------------------------------------------------------------
+
+function extractApiError(err: unknown, fallback: string): string {
+  if (axios.isAxiosError(err)) {
+    const data = err.response?.data as Record<string, unknown> | undefined
+    if (typeof data?.error === "string") return data.error
+    if (err.code === "ECONNABORTED") return "Request timed out — is the n8n workflow active?"
+    if (err.message) return err.message
+  }
+  if (err instanceof Error) return err.message
+  return fallback
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -52,9 +68,11 @@ function RepurposePageInner() {
     imageGenerationStatus,
     selectedPlatforms,
     variants,
+    activePlatform,
     setActivePost,
     setGenerationStatus,
     setImageGenerationStatus,
+    setActivePlatform,
     initVariantsFromPost,
     clearSession,
   } = useRepurposeStore()
@@ -136,6 +154,18 @@ function RepurposePageInner() {
   // Trigger handlers
   // ------------------------------------------------------------------
 
+  const handleAbortText = useCallback(() => {
+    stopPolling()
+    setGenerationStatus("idle")
+    toast.info("Text generation aborted")
+  }, [stopPolling, setGenerationStatus])
+
+  const handleAbortImages = useCallback(() => {
+    stopPolling()
+    setImageGenerationStatus("idle")
+    toast.info("Image generation aborted")
+  }, [stopPolling, setImageGenerationStatus])
+
   const handleTriggerRepurpose = useCallback(
     async (overridePostId?: string) => {
       const id = overridePostId ?? activePost?.id
@@ -148,8 +178,9 @@ function RepurposePageInner() {
           platforms: selectedPlatforms,
         })
         startPolling(id, "text")
-      } catch {
-        toast.error("Text generation could not be triggered — check n8n workflow", {
+      } catch (err) {
+        const msg = extractApiError(err, "Text generation could not be triggered")
+        toast.error(msg, {
           action: { label: "Retry", onClick: () => handleTriggerRepurpose(id) },
         })
         setGenerationStatus("idle")
@@ -169,8 +200,9 @@ function RepurposePageInner() {
         platforms: selectedPlatforms,
       })
       startPolling(activePost.id, "images")
-    } catch {
-      toast.error("Image generation could not be triggered — check n8n workflow", {
+    } catch (err) {
+      const msg = extractApiError(err, "Image generation could not be triggered")
+      toast.error(msg, {
         action: { label: "Retry", onClick: handleTriggerImages },
       })
       setImageGenerationStatus("idle")
@@ -258,8 +290,9 @@ function RepurposePageInner() {
               platforms: selectedPlatforms,
             })
             startPolling(post.id, "text")
-          } catch {
-            toast.error("Text generation could not be triggered", {
+          } catch (err) {
+            const msg = extractApiError(err, "Text generation could not be triggered")
+            toast.error(msg, {
               action: {
                 label: "Retry",
                 onClick: () => handleTriggerRepurpose(post.id),
@@ -346,6 +379,8 @@ function RepurposePageInner() {
               hasTextVariants={hasTextVariants}
               onTriggerRepurpose={handleTriggerRepurpose}
               onTriggerImages={handleTriggerImages}
+              onAbortText={handleAbortText}
+              onAbortImages={handleAbortImages}
             />
           ) : (
             <div className="p-4">
@@ -390,6 +425,8 @@ function RepurposePageInner() {
                 localVariant={variants[platform]}
                 isTextGenerating={generationStatus === "generating_text"}
                 isImageGenerating={imageGenerationStatus === "generating_images"}
+                isActive={activePlatform === platform}
+                onFocus={setActivePlatform}
                 onRefresh={handleRefresh}
               />
             ))}
@@ -401,23 +438,23 @@ function RepurposePageInner() {
           )}
         </div>
 
-        {/* ── Column 3 — AI chat sidebar (stubbed — filled in Session 7) ── */}
+        {/* ── Column 3 — AI chat sidebar ── */}
         <div className="w-[280px] flex-shrink-0 border-l border-[#2A2A2A] flex flex-col">
           <div className="p-4 border-b border-[#2A2A2A]">
             <h3 className="text-sm font-medium text-[#F5F5F5]">AI Assistant</h3>
-            <p className="text-xs text-[#555555] mt-0.5">Chat + hashtag suggestions</p>
+            <p className="text-xs text-[#555555] mt-0.5">
+              {activePlatform
+                ? `Editing ${activePlatform}`
+                : "Click a card to focus"}
+            </p>
           </div>
-          <div className="flex-1 flex items-center justify-center p-4">
-            {generationStatus === "generating_text" ? (
-              <p className="text-sm text-[#555555] text-center leading-relaxed">
-                Waiting for text generation to complete...
-              </p>
-            ) : (
-              <p className="text-sm text-[#555555] text-center leading-relaxed">
-                AI chat will be wired up in Session 7.
-              </p>
-            )}
-          </div>
+          {postId && (
+            <AIChatSidebar
+              postId={postId}
+              activePlatform={activePlatform}
+              hasTextVariants={hasTextVariants}
+            />
+          )}
         </div>
       </div>
     </div>

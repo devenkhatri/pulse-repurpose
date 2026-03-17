@@ -7,7 +7,7 @@ The app is a Next.js 14 (App Router) thin orchestrator UI + webhook trigger that
 
 ## Decisions Made
 1. **n8n workflows**: Already built and active at `n8n.devengoratela.in` — skip n8n MCP workflow creation session.
-2. **Claude model**: Use `claude-sonnet-4-5` for all direct API calls (chat sidebar + hashtag suggestions).
+2. **LLM provider**: Use **OpenRouter** for all direct LLM calls (chat sidebar, hashtag suggestions, image prompt generation). Model: `openrouter/auto` by default — override with `OPENROUTER_MODEL` env var (e.g. `meta-llama/llama-3.1-8b-instruct:free` for a specific free model). No Anthropic SDK used.
 3. **content/ directory**: Track in git (not gitignored) — personal post history is versioned.
 4. **Publish scope**: Build full publish flow for all 5 platforms — credentials will be in n8n.
 
@@ -69,11 +69,11 @@ Three-column layout: source panel → platform cards → AI chat sidebar (chat s
 - `components/repurpose/ImagePreview.tsx`
 - Connect to `repurposeStore`, wire trigger + callback polling
 
-### Session 7 — Anthropic Direct Calls (Chat + Hashtags)
-- `lib/anthropic.ts` — chat (streaming) + hashtag suggestions, model: `claude-sonnet-4-5`
-- `app/api/chat/route.ts` — streaming response for AI sidebar
-- `app/api/hashtags/route.ts` — returns suggested hashtags
-- `components/repurpose/AIChatSidebar.tsx` — message history, quick action chips, diff highlighting
+### Session 7 — OpenRouter Direct Calls (Chat + Hashtags)
+- `lib/anthropic.ts` — OpenRouter-backed: `chatWithAI`, `generateHashtagSuggestions`, `generateImagePrompts`. Uses `fetch` (no extra SDK). Model: `OPENROUTER_MODEL` env var (default `openrouter/free`).
+- `app/api/chat/route.ts` — POST, calls `chatWithAI`, returns `{ updatedText, explanation }`
+- `app/api/hashtags/route.ts` — POST, calls `generateHashtagSuggestions`, returns `{ suggestions }`
+- `components/repurpose/AIChatSidebar.tsx` — message history, quick action chips, word-level diff highlighting
 - `components/repurpose/HashtagSuggestions.tsx` — chips with click-to-add
 
 ### Session 8 — Platform Skills

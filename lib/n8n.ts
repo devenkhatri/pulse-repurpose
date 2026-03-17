@@ -9,7 +9,9 @@ import type {
   HashtagBankEntry,
   PublishWebhookPayload,
   ContentRepurposeWebhookPayload,
+  ContentPromptOutput,
   ImageRepurposeWebhookPayload,
+  ImagePromptOutput,
 } from "@/types"
 
 // ---------------------------------------------------------------------------
@@ -31,6 +33,21 @@ export async function fireContentRepurposeWebhook(params: {
     return { success: false, error: "N8N_CONTENT_REPURPOSE_WEBHOOK_URL is not configured" }
   }
 
+  // For re-generation: extract stored ContentPromptOutput JSON strings from existing variants
+  const contentPrompts: Partial<Record<Platform, ContentPromptOutput>> = {}
+  for (const p of platforms) {
+    const stored = post.platforms[p]?.contentPrompt
+    if (stored) {
+      try {
+        contentPrompts[p] = JSON.parse(stored) as ContentPromptOutput
+      } catch {
+        // skip unparseable — n8n will fall back to its own prompt engineering
+      }
+    }
+  }
+
+  const hasContentPrompts = Object.keys(contentPrompts).length > 0
+
   const payload: ContentRepurposeWebhookPayload = {
     postId: post.id,
     linkedinText: post.linkedinText,
@@ -47,11 +64,14 @@ export async function fireContentRepurposeWebhook(params: {
       platforms: h.platforms,
       topicPillar: h.topicPillar,
     })),
+    ...(hasContentPrompts ? { contentPrompts } : {}),
     callbackUrl: `${env.NEXT_PUBLIC_APP_URL}/api/callback/repurpose`,
   }
 
   try {
-    await axios.post(url, payload, { timeout: 5000 })
+    // 30s timeout — n8n can take a few seconds to spin up and ack even with
+    // "Respond to Webhook" node placed first in the workflow
+    await axios.post(url, payload, { timeout: 30000 })
 
     // Immediately mark all selected platforms as generating_text
     const variants = platforms.reduce<
@@ -94,25 +114,37 @@ export async function fireImageRepurposeWebhook(params: {
 
   const platforms = Object.keys(imagePrompts) as Platform[]
 
-  const imageSizes = platforms.reduce<
-    Partial<Record<Platform, { width: number; height: number }>>
-  >((acc, p) => {
-    acc[p] = {
-      width: PLATFORM_RULES[p].imageWidth,
-      height: PLATFORM_RULES[p].imageHeight,
-    }
-    return acc
-  }, {})
+  // Build full ImagePromptOutput objects — n8n expects the complete structure
+  const imagePayloads = platforms.reduce<Partial<Record<Platform, ImagePromptOutput>>>(
+    (acc, p) => {
+      const rules = PLATFORM_RULES[p]
+      acc[p] = {
+        prompt: imagePrompts[p] ?? "",
+        sourceImageUrl: post.linkedinImageUrl,
+        styleDirectives: {
+          aspectRatio: rules.imageAspectRatio,
+          width: rules.imageWidth,
+          height: rules.imageHeight,
+          mood: "professional",
+          colorTone: "neutral",
+          composition: "clean",
+          textOverlay: false,
+        },
+        negativePrompt: "text, watermark, logo, blurry, low quality, distorted",
+      }
+      return acc
+    },
+    {}
+  )
 
   const payload: ImageRepurposeWebhookPayload = {
     postId: post.id,
-    imagePrompts,
-    imageSizes,
+    imagePayloads,
     callbackUrl: `${env.NEXT_PUBLIC_APP_URL}/api/callback/images`,
   }
 
   try {
-    await axios.post(url, payload, { timeout: 5000 })
+    await axios.post(url, payload, { timeout: 30000 })
 
     // Best-effort: mark platforms as generating_images
     // Note: PostStatus doesn't include 'generating_images' — that's a UI-only state

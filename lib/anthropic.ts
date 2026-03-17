@@ -1,23 +1,82 @@
-import Anthropic from "@anthropic-ai/sdk"
+/**
+ * lib/anthropic.ts
+ *
+ * All direct LLM calls — chat sidebar, hashtag suggestions, image prompt generation.
+ * Uses OpenRouter (openai-compatible API) instead of the Anthropic SDK.
+ *
+ * Required env var:  OPENROUTER_API_KEY
+ * Optional env var:  OPENROUTER_MODEL  (default: "openrouter/auto")
+ *                    Set to e.g. "meta-llama/llama-3.1-8b-instruct:free" for a
+ *                    specific free-tier model, or leave as "openrouter/auto" to let
+ *                    OpenRouter pick the best available model automatically.
+ */
+
 import { env } from "@/lib/env"
 import { buildBrandVoiceSystemPrompt } from "@/lib/brand-voice"
 import { PLATFORM_RULES } from "@/lib/platform-rules"
 import type { BrandVoiceProfile, ChatMessage, Platform } from "@/types"
 
-// Model used for all direct Claude calls (chat sidebar + image prompts + hashtags)
-const MODEL = "claude-sonnet-4-5-20251101"
+const OPENROUTER_BASE = "https://openrouter.ai/api/v1/chat/completions"
 
-function getClient(): Anthropic {
-  if (!env.ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY === "your_key_here") {
-    throw new Error("ANTHROPIC_API_KEY is not configured")
+// Model to use for all LLM calls — overrideable via OPENROUTER_MODEL
+const MODEL =
+  (typeof process !== "undefined" && process.env.OPENROUTER_MODEL) ||
+  "openrouter/auto"
+
+// ---------------------------------------------------------------------------
+// Internal: single HTTP call to OpenRouter
+// ---------------------------------------------------------------------------
+
+interface ORMessage {
+  role: "system" | "user" | "assistant"
+  content: string
+}
+
+async function callOpenRouter(params: {
+  messages: ORMessage[]
+  maxTokens?: number
+}): Promise<string> {
+  const apiKey = env.OPENROUTER_API_KEY
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY is not configured")
   }
-  return new Anthropic({ apiKey: env.ANTHROPIC_API_KEY })
+
+  const response = await fetch(OPENROUTER_BASE, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": env.NEXT_PUBLIC_APP_URL,
+      "X-Title": "Pulse Repurpose",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: params.messages,
+      max_tokens: params.maxTokens ?? 1024,
+    }),
+  })
+
+  if (!response.ok) {
+    const errorBody = await response.text()
+    throw new Error(`OpenRouter ${response.status}: ${errorBody}`)
+  }
+
+  const data = (await response.json()) as {
+    choices: Array<{ message: { content: string } }>
+    error?: { message: string }
+  }
+
+  if (data.error) {
+    throw new Error(`OpenRouter error: ${data.error.message}`)
+  }
+
+  return data.choices?.[0]?.message?.content ?? ""
 }
 
 // ---------------------------------------------------------------------------
 // generateImagePrompts
 // Called by POST /api/trigger/images before firing the n8n image webhook.
-// Single Claude call that returns all platform image prompts at once.
+// Single call that returns all platform image prompts at once as JSON.
 // ---------------------------------------------------------------------------
 
 export async function generateImagePrompts(params: {
@@ -26,14 +85,18 @@ export async function generateImagePrompts(params: {
   platforms: Platform[]
 }): Promise<Partial<Record<Platform, string>>> {
   const { linkedinText, brandVoice, platforms } = params
-  const client = getClient()
 
   const platformsJson = platforms.reduce<Record<string, string>>((acc, p) => {
     acc[p] = `prompt for ${PLATFORM_RULES[p].label} image (${PLATFORM_RULES[p].imageAspectRatio}, ${PLATFORM_RULES[p].imageWidth}x${PLATFORM_RULES[p].imageHeight}px)`
     return acc
   }, {})
 
-  const prompt = `Given this LinkedIn post, generate image generation prompts for each platform listed.
+  const text = await callOpenRouter({
+    maxTokens: 1024,
+    messages: [
+      {
+        role: "user",
+        content: `Given this LinkedIn post, generate image generation prompts for each platform listed.
 Each prompt should describe a professional, clean image that visually represents the post's key idea.
 No text overlays in the image. Match the brand tone: ${brandVoice.toneDescriptors.join(", ")}.
 
@@ -44,18 +107,11 @@ Platforms: ${platforms.join(", ")}
 
 Respond in JSON only, with exactly these keys: ${platforms.join(", ")}
 Example format:
-${JSON.stringify(platformsJson, null, 2)}`
-
-  const message = await client.messages.create({
-    model: MODEL,
-    max_tokens: 1024,
-    messages: [{ role: "user", content: prompt }],
+${JSON.stringify(platformsJson, null, 2)}`,
+      },
+    ],
   })
 
-  const text =
-    message.content[0].type === "text" ? message.content[0].text : ""
-
-  // Extract JSON — handle markdown code fences
   const jsonMatch =
     text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/)
   const jsonStr = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : text
@@ -63,16 +119,15 @@ ${JSON.stringify(platformsJson, null, 2)}`
   try {
     return JSON.parse(jsonStr) as Partial<Record<Platform, string>>
   } catch {
-    // If parsing fails, return empty (caller will handle gracefully)
-    console.error("[anthropic] Failed to parse image prompts JSON", text)
+    console.error("[openrouter] Failed to parse image prompts JSON", text)
     return {}
   }
 }
 
 // ---------------------------------------------------------------------------
 // chatWithAI
-// Called by POST /api/chat — interactive in-session edits.
-// Fully implemented in Session 7; stub here so routes can import it now.
+// Called by POST /api/chat — interactive in-session edits via the AI sidebar.
+// Returns { updatedText, explanation } as structured JSON.
 // ---------------------------------------------------------------------------
 
 export async function chatWithAI(params: {
@@ -82,11 +137,10 @@ export async function chatWithAI(params: {
   brandVoice: BrandVoiceProfile
   instruction: string
 }): Promise<{ updatedText: string; explanation: string }> {
-  const { messages, currentVariantText, platform, brandVoice, instruction } =
-    params
-  const client = getClient()
+  const { messages, currentVariantText, platform, brandVoice, instruction } = params
 
   const rules = PLATFORM_RULES[platform]
+
   const systemPrompt = `${buildBrandVoiceSystemPrompt(brandVoice)}
 
 You are editing a ${rules.label} post. Platform rules:
@@ -98,10 +152,11 @@ You are editing a ${rules.label} post. Platform rules:
 Current post text:
 ${currentVariantText}
 
-The user will give you an edit instruction. Return ONLY valid JSON in this exact format:
+The user will give you an edit instruction. Return ONLY valid JSON in this exact format (no markdown, no code fences):
 {"updatedText": "...", "explanation": "one sentence explaining what changed"}`
 
-  const anthropicMessages: Anthropic.MessageParam[] = [
+  const orMessages: ORMessage[] = [
+    { role: "system", content: systemPrompt },
     ...messages.map((m) => ({
       role: m.role as "user" | "assistant",
       content: m.content,
@@ -109,15 +164,8 @@ The user will give you an edit instruction. Return ONLY valid JSON in this exact
     { role: "user", content: instruction },
   ]
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 2048,
-    system: systemPrompt,
-    messages: anthropicMessages,
-  })
+  const text = await callOpenRouter({ messages: orMessages, maxTokens: 2048 })
 
-  const text =
-    response.content[0].type === "text" ? response.content[0].text : ""
   const jsonMatch =
     text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/)
   const jsonStr = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : text
@@ -132,7 +180,7 @@ The user will give you an edit instruction. Return ONLY valid JSON in this exact
 // ---------------------------------------------------------------------------
 // generateHashtagSuggestions
 // Called by POST /api/hashtags.
-// Fully implemented in Session 7; minimal implementation here.
+// Returns a plain JSON array of hashtag strings (no # prefix).
 // ---------------------------------------------------------------------------
 
 export async function generateHashtagSuggestions(params: {
@@ -143,11 +191,15 @@ export async function generateHashtagSuggestions(params: {
   count: number
 }): Promise<string[]> {
   const { postText, platform, brandVoice, existingHashtags, count } = params
-  const client = getClient()
 
   const rules = PLATFORM_RULES[platform]
 
-  const prompt = `Suggest ${count} hashtags for this ${rules.label} post.
+  const text = await callOpenRouter({
+    maxTokens: 256,
+    messages: [
+      {
+        role: "user",
+        content: `Suggest ${count} hashtags for this ${rules.label} post.
 Rules: max ${rules.hashtagCount.max} hashtags for this platform, no # prefix, no spaces.
 Brand pillars: ${brandVoice.topicPillars.join(", ") || "none"}.
 Already using: ${existingHashtags.join(", ") || "none"} — do not repeat these.
@@ -155,17 +207,12 @@ Already using: ${existingHashtags.join(", ") || "none"} — do not repeat these.
 Post:
 ${postText}
 
-Respond with a JSON array of strings only:
-["hashtag1", "hashtag2", ...]`
-
-  const message = await client.messages.create({
-    model: MODEL,
-    max_tokens: 256,
-    messages: [{ role: "user", content: prompt }],
+Respond with a JSON array of strings only (no markdown, no code fences):
+["hashtag1", "hashtag2", ...]`,
+      },
+    ],
   })
 
-  const text =
-    message.content[0].type === "text" ? message.content[0].text : "[]"
   const jsonMatch =
     text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\[[\s\S]*\])/)
   const jsonStr = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : "[]"

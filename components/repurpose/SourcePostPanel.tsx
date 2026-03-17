@@ -2,7 +2,7 @@
 
 import Image from "next/image"
 import { format } from "date-fns"
-import { RefreshCw, ImageIcon } from "lucide-react"
+import { RefreshCw, ImageIcon, X } from "lucide-react"
 import { useRepurposeStore } from "@/stores/repurposeStore"
 import { cn } from "@/lib/utils"
 import type { LinkedInPost, Platform, GenerationStatus } from "@/types"
@@ -26,6 +26,8 @@ interface SourcePostPanelProps {
   hasTextVariants: boolean
   onTriggerRepurpose: () => void
   onTriggerImages: () => void
+  onAbortText: () => void
+  onAbortImages: () => void
 }
 
 export function SourcePostPanel({
@@ -36,6 +38,8 @@ export function SourcePostPanel({
   hasTextVariants,
   onTriggerRepurpose,
   onTriggerImages,
+  onAbortText,
+  onAbortImages,
 }: SourcePostPanelProps) {
   const { setSelectedPlatforms } = useRepurposeStore()
 
@@ -159,26 +163,44 @@ export function SourcePostPanel({
 
       {/* Action buttons */}
       <div className="space-y-2 pt-1">
-        <button
-          onClick={onTriggerRepurpose}
-          disabled={isGenerating}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm bg-[#7C3AED] hover:bg-[#6D28D9] text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <RefreshCw className={cn("w-3.5 h-3.5", isTextGenerating && "animate-spin")} />
-          {hasTextVariants ? "Re-generate text" : "Repurpose text"}
-        </button>
+        {isTextGenerating ? (
+          <button
+            onClick={onAbortText}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 rounded-lg transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+            Abort text generation
+          </button>
+        ) : (
+          <button
+            onClick={() => onTriggerRepurpose()}
+            disabled={isImageGenerating}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm bg-[#7C3AED] hover:bg-[#6D28D9] text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            {hasTextVariants ? "Re-generate text" : "Repurpose text"}
+          </button>
+        )}
 
-        <button
-          onClick={onTriggerImages}
-          disabled={!hasTextVariants || isGenerating}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm bg-[#1C1C1C] hover:bg-[#222222] border border-[#2A2A2A] text-[#F5F5F5] rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          title={!hasTextVariants ? "Generate text first" : "Generate images via fal.ai"}
-        >
-          <ImageIcon
-            className={cn("w-3.5 h-3.5", isImageGenerating && "animate-pulse")}
-          />
-          {isImageGenerating ? "Generating images..." : "Generate images"}
-        </button>
+        {isImageGenerating ? (
+          <button
+            onClick={onAbortImages}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 rounded-lg transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+            Abort image generation
+          </button>
+        ) : (
+          <button
+            onClick={onTriggerImages}
+            disabled={!hasTextVariants || isTextGenerating}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm bg-[#1C1C1C] hover:bg-[#222222] border border-[#2A2A2A] text-[#F5F5F5] rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title={!hasTextVariants ? "Generate text first" : "Generate images via fal.ai"}
+          >
+            <ImageIcon className="w-3.5 h-3.5" />
+            Generate images
+          </button>
+        )}
       </div>
     </div>
   )

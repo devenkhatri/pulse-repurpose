@@ -1,5 +1,5 @@
 import { create } from "zustand"
-import type { LinkedInPost, GenerationStatus, Platform, RepurposeVariantDraft } from "@/types"
+import type { LinkedInPost, GenerationStatus, Platform, RepurposeVariantDraft, ChatMessage } from "@/types"
 
 const ALL_PLATFORMS: Platform[] = ["twitter", "threads", "instagram", "facebook", "skool"]
 
@@ -21,6 +21,8 @@ interface RepurposeStore {
   imageGenerationStatus: GenerationStatus
   selectedPlatforms: Platform[]
   variants: Partial<Record<Platform, RepurposeVariantDraft>>
+  activePlatform: Platform | null
+  chatHistory: Partial<Record<Platform, ChatMessage[]>>
 
   setActivePost: (post: LinkedInPost | null) => void
   setGenerationStatus: (status: GenerationStatus) => void
@@ -31,6 +33,9 @@ interface RepurposeStore {
   setVariantApproved: (platform: Platform, approved: boolean) => void
   setVariantHashtags: (platform: Platform, hashtags: string[]) => void
   addSuggestedHashtag: (platform: Platform, hashtag: string) => void
+  setActivePlatform: (platform: Platform | null) => void
+  addChatMessage: (platform: Platform, message: ChatMessage) => void
+  clearChatHistory: (platform: Platform) => void
   clearSession: () => void
 }
 
@@ -40,11 +45,14 @@ export const useRepurposeStore = create<RepurposeStore>((set) => ({
   imageGenerationStatus: "idle",
   selectedPlatforms: ALL_PLATFORMS,
   variants: {},
+  activePlatform: null,
+  chatHistory: {},
 
   setActivePost: (post) => set({ activePost: post }),
   setGenerationStatus: (status) => set({ generationStatus: status }),
   setImageGenerationStatus: (status) => set({ imageGenerationStatus: status }),
   setSelectedPlatforms: (platforms) => set({ selectedPlatforms: platforms }),
+  setActivePlatform: (platform) => set({ activePlatform: platform }),
 
   initVariantsFromPost: (post: LinkedInPost) => {
     const variants: Partial<Record<Platform, RepurposeVariantDraft>> = {}
@@ -115,6 +123,22 @@ export const useRepurposeStore = create<RepurposeStore>((set) => ({
       }
     }),
 
+  addChatMessage: (platform, message) =>
+    set((state) => ({
+      chatHistory: {
+        ...state.chatHistory,
+        [platform]: [...(state.chatHistory[platform] ?? []), message],
+      },
+    })),
+
+  clearChatHistory: (platform) =>
+    set((state) => ({
+      chatHistory: {
+        ...state.chatHistory,
+        [platform]: [],
+      },
+    })),
+
   clearSession: () =>
     set({
       activePost: null,
@@ -122,5 +146,7 @@ export const useRepurposeStore = create<RepurposeStore>((set) => ({
       imageGenerationStatus: "idle",
       variants: {},
       selectedPlatforms: ALL_PLATFORMS,
+      activePlatform: null,
+      chatHistory: {},
     }),
 }))
