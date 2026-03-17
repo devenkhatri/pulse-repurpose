@@ -18,6 +18,25 @@ import type { BrandVoiceProfile, ChatMessage, Platform } from "@/types"
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1/chat/completions"
 
+// ---------------------------------------------------------------------------
+// executePrompt — exported generic single-turn prompt helper.
+// Used by platform skill routes that need a raw LLM call.
+// ---------------------------------------------------------------------------
+
+export async function executePrompt(params: {
+  system: string
+  user: string
+  maxTokens?: number
+}): Promise<string> {
+  return callOpenRouter({
+    messages: [
+      { role: "system", content: params.system },
+      { role: "user", content: params.user },
+    ],
+    maxTokens: params.maxTokens ?? 2048,
+  })
+}
+
 // Model to use for all LLM calls — overrideable via OPENROUTER_MODEL
 const MODEL =
   (typeof process !== "undefined" && process.env.OPENROUTER_MODEL) ||

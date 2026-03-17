@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
 import { getPostById, writeImagePrompts } from "@/lib/n8n-sheet"
-import { getBrandVoice } from "@/lib/brand-voice"
-import { generateImagePrompts } from "@/lib/anthropic"
+import { updatePlatformFileMeta } from "@/lib/content-store"
 import { fireImageRepurposeWebhook } from "@/lib/n8n"
-import type { Platform } from "@/types"
+import { executePlatformImageSkill } from "@/lib/platform-skills"
+import type { Platform, ImagePromptOutput } from "@/types"
 
 // ---------------------------------------------------------------------------
 // Zod schema
@@ -26,7 +26,15 @@ const TriggerImagesSchema = z.object({
 
 // ---------------------------------------------------------------------------
 // POST /api/trigger/images
-// Generates image prompts via Claude, writes to Sheet, fires n8n image webhook.
+//
+// Updated flow (Session 8 — Platform Skills):
+// 1. Fetch post from Sheet
+// 2. Execute image platform skills in parallel → per-platform ImagePromptOutput
+// 3. Persist image prompts to Sheet
+// 4. Fire n8n image repurpose webhook with pre-built full image payloads
+//
+// n8n receives complete { prompt, sourceImageUrl, styleDirectives, negativePrompt }
+// per platform and passes them directly to fal.ai.
 // Always manually triggered — never auto-triggered.
 // ---------------------------------------------------------------------------
 
@@ -42,7 +50,9 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const { postId, platforms } = parseResult.data
+    const rawPlatforms = parseResult.data.platforms
+    const { postId } = parseResult.data
+    const targetPlatforms = rawPlatforms.filter((p) => p !== "linkedin") as Platform[]
 
     // 1. Fetch post from Sheet
     const post = await getPostById(postId)
@@ -53,44 +63,76 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // 2. Load brand voice
-    const brandVoice = await getBrandVoice()
+    // 2. Execute image platform skills in parallel
+    const skillResults = await Promise.allSettled(
+      targetPlatforms.map((platform) =>
+        executePlatformImageSkill({
+          postId,
+          platform,
+          linkedinText: post.linkedinText,
+          sourceImageUrl: post.linkedinImageUrl ?? null,
+        }).then((output) => ({ platform, output }))
+      )
+    )
 
-    // 3. Generate image prompts via Claude (single fast call)
-    let imagePrompts: Partial<Record<Platform, string>>
-    try {
-      imagePrompts = await generateImagePrompts({
-        linkedinText: post.linkedinText,
-        brandVoice,
-        platforms: platforms as Platform[],
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error"
+    const imagePayloads: Partial<Record<Platform, ImagePromptOutput>> = {}
+    const skillErrors: string[] = []
+
+    for (const result of skillResults) {
+      if (result.status === "fulfilled") {
+        imagePayloads[result.value.platform] = result.value.output
+      } else {
+        skillErrors.push(String(result.reason))
+        console.error("[trigger/images] Image skill failed:", result.reason)
+      }
+    }
+
+    if (Object.keys(imagePayloads).length === 0) {
       return NextResponse.json(
-        { success: false, error: `Failed to generate image prompts: ${message}` },
+        {
+          success: false,
+          error: "All platform image skills failed",
+          details: skillErrors,
+        },
         { status: 502 }
       )
     }
 
-    // 4. Persist prompts to Sheet before firing webhook
-    await writeImagePrompts(postId, imagePrompts)
+    // 3. Persist image prompts to Sheet + content files (best-effort)
+    const imagePromptStrings: Partial<Record<Platform, string>> = {}
+    for (const [p, payload] of Object.entries(imagePayloads)) {
+      const ip = payload as ImagePromptOutput
+      imagePromptStrings[p as Platform] = ip.prompt
+      // Persist to content file
+      updatePlatformFileMeta(postId, p as Platform, {
+        image_prompt: ip.prompt,
+      }).catch(() => {})
+    }
 
-    // 5. Fire the n8n image repurpose webhook
-    const result = await fireImageRepurposeWebhook({
-      post,
-      imagePrompts,
+    await writeImagePrompts(postId, imagePromptStrings).catch((e) => {
+      console.warn("[trigger/images] writeImagePrompts failed:", e)
     })
 
-    if (!result.success) {
+    // 4. Fire the n8n image repurpose webhook with full image payloads
+    const webhookResult = await fireImageRepurposeWebhook({
+      post,
+      imagePayloads,
+    })
+
+    if (!webhookResult.success) {
       return NextResponse.json(
-        { success: false, error: result.error ?? "Webhook fire failed" },
+        { success: false, error: webhookResult.error ?? "Webhook fire failed" },
         { status: 502 }
       )
     }
 
-    return NextResponse.json({ success: true, imagePrompts })
+    return NextResponse.json({
+      success: true,
+      ...(skillErrors.length > 0 ? { warnings: skillErrors } : {}),
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error"
+    console.error("[trigger/images] Unexpected error:", message)
     return NextResponse.json(
       { success: false, error: message },
       { status: 500 }

@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
-import { getPostById } from "@/lib/n8n-sheet"
-import { getBrandVoice } from "@/lib/brand-voice"
-import { getHashtagBank } from "@/lib/hashtag-bank"
+import { getPostById, writeContentPrompts } from "@/lib/n8n-sheet"
 import { fireContentRepurposeWebhook } from "@/lib/n8n"
-import { writeSourceFile } from "@/lib/content-store"
-import type { Platform } from "@/types"
+import { writeSourceFile, updatePlatformFileMeta } from "@/lib/content-store"
+import { executePlatformContentSkill } from "@/lib/platform-skills"
+import type { Platform, ContentPromptOutput } from "@/types"
 
 // ---------------------------------------------------------------------------
 // Zod schema
@@ -35,8 +34,16 @@ const TriggerRepurposeSchema = z.object({
 
 // ---------------------------------------------------------------------------
 // POST /api/trigger/repurpose
-// Fires the n8n content repurpose webhook.
-// Called manually (user clicks Repurpose) or automatically (auto-trigger).
+//
+// Updated flow (Session 8 — Platform Skills):
+// 1. Fetch post from Sheet
+// 2. Write _source.md (idempotent)
+// 3. Execute content platform skills in parallel → per-platform prompt payloads
+// 4. Persist content prompts to Sheet
+// 5. Fire n8n content repurpose webhook with pre-built prompt payloads
+//
+// n8n no longer builds prompts from brand voice — it receives ready-to-use
+// system + user prompt pairs per platform and passes them directly to Claude.
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
@@ -52,6 +59,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { postId, platforms = ALL_PLATFORMS } = parseResult.data
+    const targetPlatforms = platforms.filter((p) => p !== "linkedin") as Platform[]
 
     // 1. Fetch post from Sheet
     const post = await getPostById(postId)
@@ -62,25 +70,70 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // 2. Write _source.md (idempotent — won't overwrite if it already exists)
-    await writeSourceFile(post)
+    // 2. Write _source.md (idempotent — won't overwrite if already exists)
+    await writeSourceFile(post).catch(() => {})
 
-    // 3. Load brand voice + hashtag bank
-    const [brandVoice, hashtagBank] = await Promise.all([
-      getBrandVoice(),
-      getHashtagBank(),
-    ])
+    // 3. Execute content platform skills in parallel
+    const skillResults = await Promise.allSettled(
+      targetPlatforms.map((platform) =>
+        executePlatformContentSkill({
+          postId,
+          platform,
+          linkedinText: post.linkedinText,
+        }).then((output) => ({ platform, output }))
+      )
+    )
 
-    // 4. Fire the n8n content repurpose webhook
-    const result = await fireContentRepurposeWebhook({
-      post,
-      platforms: platforms as Platform[],
-      brandVoice,
-      hashtagBank,
+    const contentPrompts: Partial<Record<Platform, ContentPromptOutput>> = {}
+    const skillErrors: string[] = []
+
+    for (const result of skillResults) {
+      if (result.status === "fulfilled") {
+        contentPrompts[result.value.platform] = result.value.output
+      } else {
+        skillErrors.push(String(result.reason))
+        console.error("[trigger/repurpose] Skill failed:", result.reason)
+      }
+    }
+
+    if (Object.keys(contentPrompts).length === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "All platform content skills failed",
+          details: skillErrors,
+        },
+        { status: 502 }
+      )
+    }
+
+    // 4. Persist content prompts to Sheet + content files (best-effort)
+    const promptStrings: Partial<Record<Platform, string>> = {}
+    for (const [p, prompt] of Object.entries(contentPrompts)) {
+      const cp = prompt as ContentPromptOutput
+      promptStrings[p as Platform] = JSON.stringify({
+        systemPrompt: cp.systemPrompt,
+        userPrompt: cp.userPrompt,
+      })
+      // Also persist preview to content file
+      updatePlatformFileMeta(postId, p as Platform, {
+        content_prompt_preview: cp.userPrompt?.slice(0, 200),
+      }).catch(() => {})
+    }
+
+    await writeContentPrompts(postId, promptStrings).catch((e) => {
+      console.warn("[trigger/repurpose] writeContentPrompts failed:", e)
     })
 
-    if (!result.success) {
-      const errMsg = result.error ?? "Webhook fire failed"
+    // 5. Fire the n8n content repurpose webhook with pre-built prompts
+    const webhookResult = await fireContentRepurposeWebhook({
+      post,
+      platforms: Object.keys(contentPrompts) as Platform[],
+      contentPrompts,
+    })
+
+    if (!webhookResult.success) {
+      const errMsg = webhookResult.error ?? "Webhook fire failed"
       console.error("[trigger/repurpose] n8n webhook error:", errMsg)
       return NextResponse.json(
         { success: false, error: `n8n webhook: ${errMsg}` },
@@ -88,7 +141,10 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    return NextResponse.json({ success: true })
+    return NextResponse.json({
+      success: true,
+      ...(skillErrors.length > 0 ? { warnings: skillErrors } : {}),
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error"
     console.error("[trigger/repurpose] Unexpected error:", message)

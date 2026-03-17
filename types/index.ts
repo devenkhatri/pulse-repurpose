@@ -76,7 +76,7 @@ export interface ContentPromptOutput {
   context: {
     platformLabel: string
     maxChars: number
-    hashtagCount: { min: number; max: number }
+    hashtagCount: string        // e.g. "1-3 hashtags"
     threadEnabled: boolean
     learningsApplied: string[]
   }
@@ -98,23 +98,20 @@ export interface ImagePromptOutput {
 }
 
 // Webhook 1: App → n8n content repurpose workflow
+// Skills pre-build all prompts; n8n receives ready-to-use per-platform prompt pairs.
 export interface ContentRepurposeWebhookPayload {
   postId: string
-  linkedinText: string
-  platforms: Platform[]             // Which platforms to generate for
-  brandVoice: {
-    toneDescriptors: string[]
-    writingStyle: string
-    topicPillars: string[]
-    avoidList: string[]
-    examplePosts: string[]
-  }
-  hashtagBank: Array<{
-    hashtag: string
-    platforms: Platform[]
-    topicPillar: string | null
-  }>
-  contentPrompts?: Partial<Record<Platform, ContentPromptOutput>>  // Only sent when re-generating with stored prompts; absent on first-time generation
+  contentPrompts: Partial<Record<Platform, {
+    systemPrompt: string
+    userPrompt: string
+    context: {
+      platformLabel: string
+      maxChars: number
+      hashtagCount: string
+      threadEnabled: boolean
+      learningsApplied: string[]
+    }
+  }>>
   callbackUrl: string               // App's /api/callback/repurpose endpoint
 }
 
