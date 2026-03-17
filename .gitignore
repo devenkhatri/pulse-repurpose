@@ -1,0 +1,6 @@
+.env.local
+node_modules/
+.next/
+config/brand-voice.json
+config/hashtag-bank.json
+memory/daily/
