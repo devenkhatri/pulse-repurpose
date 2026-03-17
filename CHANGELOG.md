@@ -4,6 +4,27 @@ All changes are recorded here in append-only order after every session.
 
 ---
 
+## Session 3 — Brand Voice + Hashtag Bank + Settings Page
+**Date:** 2026-03-17
+
+### Added
+- `lib/brand-voice.ts` — getBrandVoice, saveBrandVoice, buildBrandVoiceSystemPrompt; reads/writes config/brand-voice.json
+- `lib/hashtag-bank.ts` — getHashtagBank, addHashtag, removeHashtag, incrementUsage, getRelevantHashtags; reads/writes config/hashtag-bank.json
+- `app/api/brand-voice/route.ts` — GET (read profile) / POST (save profile) with Zod validation
+- `app/api/hashtag-bank/route.ts` — GET / POST (add) / DELETE with Zod validation
+- `components/settings/BrandVoiceForm.tsx` — full form: tone tags (8 max, suggestions), writing style textarea, topic pillars, avoid list, example posts, save with toast
+- `components/settings/ExamplePostsInput.tsx` — up to 5 textarea slots, add/remove, char count
+- `components/settings/AvoidListInput.tsx` — tag input with pre-suggestions pill buttons
+- `components/settings/TopicPillarsInput.tsx` — tag input with 6-pillar cap
+- `components/settings/HashtagBankManager.tsx` — add form with platform checkboxes + pillar selector, sortable/filterable table, bulk import
+- Full `/settings` page — tabbed (Brand Voice / Hashtag Bank), loads from API on mount
+
+### Modified
+- `stores/settingsStore.ts` — implemented fetchBrandVoice and fetchHashtagBank with real API calls; added setBrandVoice and setHashtagBank setters
+- `app/settings/page.tsx` — replaced stub with full tabbed Settings UI
+
+---
+
 ## Session 2 — Google Sheets Layer + Posts API + Content Store
 **Date:** 2026-03-17
 
