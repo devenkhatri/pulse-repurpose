@@ -1020,20 +1020,35 @@ GET returns current `BrandVoiceProfile`. POST saves and returns updated profile.
 
 **Layout**: Full-width table with sticky header. Top bar has filter controls.
 
-**Filter controls** (horizontal row above table):
+**Search bar** (above filter controls):
+- Full-text search across the original LinkedIn post text AND all repurposed platform text fields
+- Case-insensitive substring match, client-side
+- Empty state message shows the search query when no posts match
+
+**Filter controls** (horizontal row below search bar):
 - Platform filter: pill toggles for All / Twitter / Threads / Instagram / Facebook / Skool
 - Status filter: All / Pending / Approved / Scheduled / Published
 - Date range picker
+- Clear button resets all filters AND the search query
 
-**Table columns**:
-- Date (posted_at, formatted as "Mar 12")
+**Table columns** (all sortable except Actions):
+- Date (posted_at, formatted as "Mar 12") — **default sort: latest first (descending)**
 - LinkedIn post (first 80 chars, expandable on click)
 - Twitter status badge
 - Threads status badge
 - Instagram status badge
 - Facebook status badge
 - Skool status badge
-- Actions: "Repurpose" button, "View" button
+- Actions: "Repurpose" button, "View" button (not sortable)
+
+**Column sorting**:
+- Click any column header (except Actions) to sort by that column
+- Click the same header again to toggle direction (↑ ascending / ↓ descending)
+- Click a different header to sort by that column (resets to descending)
+- Sort indicators: active column shows ↑ or ↓; inactive columns show ↕
+- Date → sorts by `postedAt` ISO string
+- LinkedIn Post → sorts alphabetically by `linkedinText`
+- Platform columns → sorts by status priority: published > approved > scheduled > pending > failed
 
 **Status badge colors**:
 - `pending` → gray

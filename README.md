@@ -10,6 +10,8 @@ A personal content operations tool that repurposes LinkedIn posts across Twitter
 - **Image Generation** - Creates platform-optimized images using fal.ai through n8n
 - **Content Calendar** - Visual calendar with scheduling and gap warnings
 - **Approval Workflow** - Review and approve AI-generated content before publishing
+- **Post Search** - Full-text search across original LinkedIn posts and all repurposed platform variants
+- **Sortable Table** - Click any column header to sort posts; default order is latest first
 
 ### Content Intelligence
 - **Brand Voice Configuration** - Define tone, writing style, topic pillars, and example posts
@@ -62,7 +64,7 @@ A personal content operations tool that repurposes LinkedIn posts across Twitter
 
 ### Key Components
 
-1. **Dashboard** - Overview of all posts with stats (total, repurposed, published, pending approval)
+1. **Dashboard** - Overview of all posts with stats, full-text search, and sortable columns (latest first by default)
 2. **Repurpose Page** - Select a LinkedIn post, generate variants, edit, and approve
 3. **Calendar** - Schedule posts, view by platform, detect content gaps
 4. **Settings** - Configure brand voice and manage hashtag bank
