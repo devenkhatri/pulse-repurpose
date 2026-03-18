@@ -108,7 +108,6 @@ Three-column layout: source panel → platform cards → AI chat sidebar (chat s
 
 ### Session 11 — Polish + Edge Cases
 - Keyboard shortcuts: Cmd+Enter (approve), Cmd+R (re-generate), Cmd+S (save settings), Escape (close)
-- Auto-trigger safeguard: only fires if pending + post < 7 days + status idle
 - Webhook URL validation banner on startup (any missing N8N_* URLs)
 - First-run redirect to /settings if no brand voice configured
 - Error state refinement for all 10 error scenarios from spec
