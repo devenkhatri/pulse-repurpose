@@ -62,7 +62,9 @@ export async function GET(req: NextRequest) {
       toDate: to,
     })
 
-    return NextResponse.json({ posts })
+    return NextResponse.json({ posts }, {
+      headers: { "Cache-Control": "public, max-age=15, stale-while-revalidate=15" },
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error"
     return NextResponse.json(

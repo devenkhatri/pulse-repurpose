@@ -14,6 +14,9 @@ import fs from "fs/promises"
 import path from "path"
 import { executePrompt } from "@/lib/anthropic"
 import { getBrandVoice } from "@/lib/brand-voice"
+import { cacheGetOrSet } from "@/lib/cache"
+
+const FILE_TTL_MS = 5 * 60 * 1000
 import type {
   Platform,
   ContentPromptOutput,
@@ -80,9 +83,9 @@ async function loadSkillContext(
   const skillPath = path.join(root, "skills", "platforms", `${platform}-${skillType}.md`)
 
   const [skillContent, learningsRaw, userProfileRaw, brandVoice] = await Promise.all([
-    fs.readFile(skillPath, "utf-8"),
-    fs.readFile(path.join(root, "memory", "learnings.md"), "utf-8").catch(() => ""),
-    fs.readFile(path.join(root, "memory", "USER.md"), "utf-8").catch(() => ""),
+    cacheGetOrSet(`file:skill:${platform}-${skillType}`, FILE_TTL_MS, () => fs.readFile(skillPath, "utf-8")),
+    cacheGetOrSet("file:learnings", FILE_TTL_MS, () => fs.readFile(path.join(root, "memory", "learnings.md"), "utf-8").catch(() => "")),
+    cacheGetOrSet("file:user-profile", FILE_TTL_MS, () => fs.readFile(path.join(root, "memory", "USER.md"), "utf-8").catch(() => "")),
     getBrandVoice(),
   ])
 

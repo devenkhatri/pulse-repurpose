@@ -1,6 +1,10 @@
 import fs from "fs/promises"
 import path from "path"
 import type { BrandVoiceProfile } from "@/types"
+import { cacheGetOrSet, cacheDelete } from "@/lib/cache"
+
+const BRAND_VOICE_CACHE_KEY = "file:brand-voice"
+const BRAND_VOICE_TTL_MS = 5 * 60 * 1000
 
 const CONFIG_PATH = path.join(process.cwd(), "config", "brand-voice.json")
 
@@ -19,12 +23,14 @@ const DEFAULT_BRAND_VOICE: BrandVoiceProfile = {
 // ---------------------------------------------------------------------------
 
 export async function getBrandVoice(): Promise<BrandVoiceProfile> {
-  try {
-    const raw = await fs.readFile(CONFIG_PATH, "utf-8")
-    return JSON.parse(raw) as BrandVoiceProfile
-  } catch {
-    return DEFAULT_BRAND_VOICE
-  }
+  return cacheGetOrSet(BRAND_VOICE_CACHE_KEY, BRAND_VOICE_TTL_MS, async () => {
+    try {
+      const raw = await fs.readFile(CONFIG_PATH, "utf-8")
+      return JSON.parse(raw) as BrandVoiceProfile
+    } catch {
+      return DEFAULT_BRAND_VOICE
+    }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -37,6 +43,7 @@ export async function saveBrandVoice(profile: BrandVoiceProfile): Promise<void> 
     lastUpdated: new Date().toISOString(),
   }
   await fs.writeFile(CONFIG_PATH, JSON.stringify(updated, null, 2))
+  cacheDelete(BRAND_VOICE_CACHE_KEY)
 }
 
 // ---------------------------------------------------------------------------

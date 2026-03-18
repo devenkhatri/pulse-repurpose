@@ -16,6 +16,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { minimatch } from "minimatch"
+import { cacheDelete } from "@/lib/cache"
 
 // ---------------------------------------------------------------------------
 // File-to-doc impact map
@@ -319,6 +320,7 @@ export async function regenerateWithTemplate(docPath: string): Promise<void> {
     // Append a doc-change observation rather than rewriting
     const entry = `\n- [${new Date().toISOString().split("T")[0]}] System: Documentation auto-synced after codebase change. learnings.md structure preserved.`
     await fs.appendFile("memory/learnings.md", entry, "utf-8")
+    cacheDelete("file:learnings")
     return
   }
 }
@@ -426,6 +428,7 @@ export async function appendToLearnings(
       `_Last updated: ${new Date().toISOString()}_`
     )
     await fs.writeFile(learningsPath, refreshed, "utf-8")
+    cacheDelete("file:learnings")
   } catch {
     // learnings.md doesn't exist — create it
     await fs.mkdir(path.dirname(learningsPath), { recursive: true })

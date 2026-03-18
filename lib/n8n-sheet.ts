@@ -1,5 +1,6 @@
 import axios from "axios"
 import { env } from "@/lib/env"
+import { cacheGetOrSet, cacheDelete, cacheDeletePrefix } from "@/lib/cache"
 import type {
   LinkedInPost,
   Platform,
@@ -101,6 +102,22 @@ export interface GetAllPostsFilters {
   toDate?: string
 }
 
+const POST_TTL_MS = 2500
+const POSTS_LIST_TTL_MS = 30_000
+
+function postsListCacheKey(filters?: GetAllPostsFilters): string {
+  if (!filters || Object.keys(filters).length === 0) return "posts:list:all"
+  const sorted = Object.entries(filters)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b))
+  return `posts:list:${JSON.stringify(Object.fromEntries(sorted))}`
+}
+
+export function invalidatePostCache(postId: string): void {
+  cacheDelete(`post:${postId}`)
+  cacheDeletePrefix("posts:list:")
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -113,12 +130,14 @@ export interface GetAllPostsFilters {
 export async function getAllPosts(
   filters?: GetAllPostsFilters
 ): Promise<LinkedInPost[]> {
-  const data = await sheetRequest<{ posts: unknown[] }>(
-    "GET_ALL_POSTS",
-    (filters ?? {}) as Record<string, unknown>,
-    15000
-  )
-  return normalizePosts(data.posts ?? [])
+  return cacheGetOrSet(postsListCacheKey(filters), POSTS_LIST_TTL_MS, async () => {
+    const data = await sheetRequest<{ posts: unknown[] }>(
+      "GET_ALL_POSTS",
+      (filters ?? {}) as Record<string, unknown>,
+      15000
+    )
+    return normalizePosts(data.posts ?? [])
+  })
 }
 
 /**
@@ -126,12 +145,14 @@ export async function getAllPosts(
  * Normalizes snake_case column names from Sheets to camelCase for the app.
  */
 export async function getPostById(postId: string): Promise<LinkedInPost | null> {
-  const data = await sheetRequest<{ post: unknown | null }>(
-    "GET_POST_BY_ID",
-    { postId },
-    15000
-  )
-  return data.post ? normalizePost(data.post) : null
+  return cacheGetOrSet(`post:${postId}`, POST_TTL_MS, async () => {
+    const data = await sheetRequest<{ post: unknown | null }>(
+      "GET_POST_BY_ID",
+      { postId },
+      15000
+    )
+    return data.post ? normalizePost(data.post) : null
+  })
 }
 
 /**

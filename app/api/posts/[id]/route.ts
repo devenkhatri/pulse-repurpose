@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
-import { getPostById, updatePlatformVariant, updateMultiplePlatforms } from "@/lib/n8n-sheet"
+import { getPostById, updatePlatformVariant, updateMultiplePlatforms, invalidatePostCache } from "@/lib/n8n-sheet"
 import { updatePlatformFileMeta } from "@/lib/content-store"
 import { appendToLearnings, appendToMemory } from "@/lib/docs-sync"
 import type { Platform } from "@/types"
@@ -63,7 +63,9 @@ export async function GET(
     if (!post) {
       return NextResponse.json({ error: "Post not found" }, { status: 404 })
     }
-    return NextResponse.json({ post })
+    return NextResponse.json({ post }, {
+      headers: { "Cache-Control": "public, max-age=2, stale-while-revalidate=1" },
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error"
     return NextResponse.json(
@@ -118,6 +120,7 @@ export async function PATCH(
           }
         })
       )
+      invalidatePostCache(postId)
     } else if (platform && variant) {
       // Single-platform update
       await updatePlatformVariant(postId, platform, variant)
@@ -143,6 +146,7 @@ export async function PATCH(
           `${new Date().toISOString()} ${platform} variant for ${postId} ${variant.isEdited ? "approved (with edits)" : "approved (no edits)"}.`
         ).catch(() => {})
       }
+      invalidatePostCache(postId)
     } else {
       return NextResponse.json(
         { error: "Provide either (platform + variant) or variants object" },

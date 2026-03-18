@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
-import { getPostById } from "@/lib/n8n-sheet"
+import { getPostById, invalidatePostCache } from "@/lib/n8n-sheet"
 import { writePlatformFile } from "@/lib/content-store"
 import type { Platform } from "@/types"
 
@@ -54,7 +54,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ received: true })
     }
 
-    // Re-fetch the post from Sheet — n8n has already written the text variants
+    // Re-fetch the post from Sheet — n8n has already written the text variants.
+    // Invalidate first so we bypass any stale cached snapshot from before generation.
+    invalidatePostCache(postId)
     const post = await getPostById(postId)
     if (!post) {
       console.warn(`[callback/repurpose] Post not found in Sheet: ${postId}`)
