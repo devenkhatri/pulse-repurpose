@@ -9,7 +9,57 @@ import type {
 } from "@/types"
 
 // ---------------------------------------------------------------------------
-// Internal helper
+// Internal helper: Convert snake_case to camelCase
+// ---------------------------------------------------------------------------
+
+function snakeToCamel(str: string): string {
+  return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())
+}
+
+function convertKeysToCamelCase(obj: unknown): unknown {
+  if (obj === null || obj === undefined) {
+    return obj
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map((item) => convertKeysToCamelCase(item))
+  }
+
+  if (typeof obj === "object") {
+    const result: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      const camelKey = snakeToCamel(key)
+      result[camelKey] = convertKeysToCamelCase(value)
+    }
+    return result
+  }
+
+  return obj
+}
+
+/**
+ * Normalize post data from Google Sheets (snake_case) to app format (camelCase).
+ */
+function normalizePost(post: unknown): LinkedInPost {
+  const normalized = convertKeysToCamelCase(post) as Partial<LinkedInPost>
+
+  // Ensure platforms object exists
+  if (!normalized.platforms) {
+    normalized.platforms = {} as Record<Platform, PlatformVariant>
+  }
+
+  return normalized as LinkedInPost
+}
+
+/**
+ * Normalize array of posts from Google Sheets.
+ */
+function normalizePosts(posts: unknown[]): LinkedInPost[] {
+  return posts.map(normalizePost)
+}
+
+// ---------------------------------------------------------------------------
+// Internal helper: sheet request
 // ---------------------------------------------------------------------------
 
 async function sheetRequest<T>(
@@ -58,28 +108,30 @@ export interface GetAllPostsFilters {
 /**
  * Fetch all posts from Google Sheets (via n8n Sheet webhook).
  * Filters are applied server-side by n8n.
+ * Normalizes snake_case column names from Sheets to camelCase for the app.
  */
 export async function getAllPosts(
   filters?: GetAllPostsFilters
 ): Promise<LinkedInPost[]> {
-  const data = await sheetRequest<{ posts: LinkedInPost[] }>(
+  const data = await sheetRequest<{ posts: unknown[] }>(
     "GET_ALL_POSTS",
     (filters ?? {}) as Record<string, unknown>,
     15000
   )
-  return data.posts ?? []
+  return normalizePosts(data.posts ?? [])
 }
 
 /**
  * Fetch a single post by ID.
+ * Normalizes snake_case column names from Sheets to camelCase for the app.
  */
 export async function getPostById(postId: string): Promise<LinkedInPost | null> {
-  const data = await sheetRequest<{ post: LinkedInPost | null }>(
+  const data = await sheetRequest<{ post: unknown | null }>(
     "GET_POST_BY_ID",
     { postId },
     15000
   )
-  return data.post ?? null
+  return data.post ? normalizePost(data.post) : null
 }
 
 /**

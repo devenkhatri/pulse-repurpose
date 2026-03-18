@@ -89,7 +89,14 @@ async function callOpenRouter(params: {
     throw new Error(`OpenRouter error: ${data.error.message}`)
   }
 
-  return data.choices?.[0]?.message?.content ?? ""
+  const content = data.choices?.[0]?.message?.content
+  if (!content) {
+    // Log full response to aid debugging (rate-limit, model refusal, etc.)
+    console.warn("[openrouter] Empty content in response:", JSON.stringify(data).slice(0, 300))
+    throw new Error("Empty response from LLM")
+  }
+
+  return content
 }
 
 // ---------------------------------------------------------------------------

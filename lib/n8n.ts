@@ -38,7 +38,10 @@ export async function fireContentRepurposeWebhook(params: {
 
   try {
     // 30s timeout — n8n can take a few seconds to spin up and ack
+    const urlPreview = url.length > 60 ? url.slice(0, 60) + "…" : url
+    console.log(`[n8n] POST ${urlPreview}  postId=${post.id}  platforms=${platforms.join(",")}`)
     await axios.post(url, payload, { timeout: 30000 })
+    console.log(`[n8n] Content repurpose webhook ack'd for postId=${post.id}`)
 
     // Best-effort: mark all selected platforms as pending in Sheet
     const variants = platforms.reduce<

@@ -73,14 +73,19 @@ export async function POST(req: NextRequest) {
     // 2. Write _source.md (idempotent — won't overwrite if already exists)
     await writeSourceFile(post).catch(() => {})
 
-    // 3. Execute content platform skills in parallel
+    // 3. Execute content platform skills — staggered to avoid free-tier rate limits
+    console.log(`[trigger/repurpose] Running skills for platforms: ${targetPlatforms.join(", ")}`)
     const skillResults = await Promise.allSettled(
-      targetPlatforms.map((platform) =>
-        executePlatformContentSkill({
-          postId,
-          platform,
-          linkedinText: post.linkedinText,
-        }).then((output) => ({ platform, output }))
+      targetPlatforms.map((platform, i) =>
+        new Promise<void>((resolve) => setTimeout(resolve, i * 500))
+          .then(() =>
+            executePlatformContentSkill({
+              postId,
+              platform,
+              linkedinText: post.linkedinText,
+            })
+          )
+          .then((output) => ({ platform, output }))
       )
     )
 
@@ -89,6 +94,7 @@ export async function POST(req: NextRequest) {
 
     for (const result of skillResults) {
       if (result.status === "fulfilled") {
+        console.log(`[trigger/repurpose] Skill OK: ${result.value.platform}`)
         contentPrompts[result.value.platform] = result.value.output
       } else {
         skillErrors.push(String(result.reason))
@@ -96,7 +102,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    console.log(
+      `[trigger/repurpose] Skills complete — OK: ${Object.keys(contentPrompts).join(", ") || "none"}, failed: ${skillErrors.length}`
+    )
+
     if (Object.keys(contentPrompts).length === 0) {
+      console.error("[trigger/repurpose] All skills failed — webhook NOT fired")
       return NextResponse.json(
         {
           success: false,
@@ -126,6 +137,10 @@ export async function POST(req: NextRequest) {
     })
 
     // 5. Fire the n8n content repurpose webhook with pre-built prompts
+    const webhookUrl = process.env.N8N_CONTENT_REPURPOSE_WEBHOOK_URL
+    console.log(
+      `[trigger/repurpose] Firing n8n webhook — url configured: ${!!webhookUrl}, platforms: ${Object.keys(contentPrompts).join(", ")}`
+    )
     const webhookResult = await fireContentRepurposeWebhook({
       post,
       platforms: Object.keys(contentPrompts) as Platform[],
@@ -141,6 +156,7 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    console.log("[trigger/repurpose] n8n webhook fired successfully")
     return NextResponse.json({
       success: true,
       ...(skillErrors.length > 0 ? { warnings: skillErrors } : {}),

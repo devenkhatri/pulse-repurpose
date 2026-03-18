@@ -34,15 +34,6 @@ function extractApiError(err: unknown, fallback: string): string {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function allPlatformsPending(post: LinkedInPost, platforms: Platform[]): boolean {
-  return platforms.every((p) => post.platforms[p]?.status === "pending")
-}
-
-function postIsWithin7Days(post: LinkedInPost): boolean {
-  const diff = Date.now() - new Date(post.postedAt).getTime()
-  return diff < 7 * 24 * 60 * 60 * 1000
-}
-
 function allPlatformsHaveText(post: LinkedInPost, platforms: Platform[]): boolean {
   return platforms.every((p) => {
     const t = post.platforms[p]?.text
@@ -82,7 +73,6 @@ function RepurposePageInner() {
 
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollStartRef = useRef<number>(0)
-  const autoTriggeredRef = useRef(false)
 
   // ------------------------------------------------------------------
   // Core fetch helper
@@ -264,43 +254,16 @@ function RepurposePageInner() {
     if (!postId) return
 
     clearSession()
-    autoTriggeredRef.current = false
     setIsLoading(true)
 
     fetchPost(postId)
-      .then(async (post) => {
+      .then((post) => {
         if (!post) {
           toast.error("Post not found")
           return
         }
         setActivePost(post)
         initVariantsFromPost(post)
-
-        // Auto-trigger if all pending and post within 7 days
-        if (
-          allPlatformsPending(post, selectedPlatforms) &&
-          postIsWithin7Days(post) &&
-          !autoTriggeredRef.current
-        ) {
-          autoTriggeredRef.current = true
-          setGenerationStatus("generating_text")
-          try {
-            await axios.post("/api/trigger/repurpose", {
-              postId: post.id,
-              platforms: selectedPlatforms,
-            })
-            startPolling(post.id, "text")
-          } catch (err) {
-            const msg = extractApiError(err, "Text generation could not be triggered")
-            toast.error(msg, {
-              action: {
-                label: "Retry",
-                onClick: () => handleTriggerRepurpose(post.id),
-              },
-            })
-            setGenerationStatus("idle")
-          }
-        }
       })
       .catch(() => toast.error("Failed to load post"))
       .finally(() => setIsLoading(false))
