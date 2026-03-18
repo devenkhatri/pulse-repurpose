@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, KeyboardEvent } from "react"
+import { useState, useEffect, useCallback, KeyboardEvent } from "react"
 import { toast } from "sonner"
 import { Save, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -77,7 +77,7 @@ export function BrandVoiceForm({ initialProfile, onSaved }: BrandVoiceFormProps)
     (s) => !profile.toneDescriptors.includes(s)
   )
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     setSaving(true)
     try {
       const res = await fetch("/api/brand-voice", {
@@ -108,7 +108,22 @@ export function BrandVoiceForm({ initialProfile, onSaved }: BrandVoiceFormProps)
     } finally {
       setSaving(false)
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile, onSaved])
+
+  // Cmd+S / Ctrl+S → save
+  useEffect(() => {
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().includes("MAC")
+      const metaKey = isMac ? e.metaKey : e.ctrlKey
+      if (metaKey && e.key.toLowerCase() === "s") {
+        e.preventDefault()
+        handleSave()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [handleSave])
 
   return (
     <div className="space-y-8 max-w-2xl">

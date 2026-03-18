@@ -9,6 +9,7 @@ import { SourcePostPanel } from "@/components/repurpose/SourcePostPanel"
 import { PlatformCard } from "@/components/repurpose/PlatformCard"
 import { GenerationStatusPanel } from "@/components/repurpose/GenerationStatusPanel"
 import { AIChatSidebar } from "@/components/repurpose/AIChatSidebar"
+import { ConfirmDialog } from "@/components/shared/ConfirmDialog"
 import { useRepurposeStore } from "@/stores/repurposeStore"
 import type { LinkedInPost, Platform } from "@/types"
 
@@ -70,6 +71,7 @@ function RepurposePageInner() {
 
   const [isLoading, setIsLoading] = useState(false)
   const [pollWarning, setPollWarning] = useState(false)
+  const [showRegenConfirm, setShowRegenConfirm] = useState(false)
 
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollStartRef = useRef<number>(0)
@@ -273,6 +275,69 @@ function RepurposePageInner() {
   }, [postId])
 
   // ------------------------------------------------------------------
+  // Keyboard shortcuts
+  // ------------------------------------------------------------------
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().includes("MAC")
+      const metaKey = isMac ? e.metaKey : e.ctrlKey
+
+      // Escape — clear active platform focus
+      if (e.key === "Escape") {
+        setActivePlatform(null)
+        return
+      }
+
+      // Don't fire when user is typing in an input / textarea
+      const tag = (e.target as HTMLElement).tagName.toLowerCase()
+      if (tag === "input" || tag === "textarea" || tag === "select") return
+
+      // Cmd+Enter — approve the focused (active) platform card
+      if (metaKey && e.key === "Enter") {
+        e.preventDefault()
+        if (activePlatform && activePost) {
+          const variant = activePost.platforms[activePlatform]
+          if (variant?.text && variant.status !== "published" && variant.status !== "scheduled") {
+            // Trigger approve for the focused card — same logic as handleApprove in PlatformCard
+            axios
+              .patch(`/api/posts/${activePost.id}`, {
+                platform: activePlatform,
+                variant: { status: "approved", approvedAt: new Date().toISOString() },
+              })
+              .then(() => handleRefresh())
+              .catch(() => toast.error("Failed to approve"))
+          }
+        }
+        return
+      }
+
+      // Cmd+R — re-generate (with confirmation if any edited variant exists)
+      if (metaKey && e.key.toLowerCase() === "r") {
+        e.preventDefault()
+        if (!activePost || generationStatus === "generating_text") return
+        const hasEdits = selectedPlatforms.some((p) => activePost.platforms[p]?.isEdited)
+        if (hasEdits) {
+          setShowRegenConfirm(true)
+        } else {
+          handleTriggerRepurpose()
+        }
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [
+    activePlatform,
+    activePost,
+    generationStatus,
+    selectedPlatforms,
+    setActivePlatform,
+    handleRefresh,
+    handleTriggerRepurpose,
+  ])
+
+  // ------------------------------------------------------------------
   // Derived state
   // ------------------------------------------------------------------
 
@@ -309,6 +374,18 @@ function RepurposePageInner() {
   // ------------------------------------------------------------------
 
   return (
+    <>
+    <ConfirmDialog
+      open={showRegenConfirm}
+      title="Re-generate content?"
+      description="This will overwrite your manual edits for all platforms. Continue?"
+      confirmLabel="Re-generate"
+      onConfirm={() => {
+        setShowRegenConfirm(false)
+        handleTriggerRepurpose()
+      }}
+      onCancel={() => setShowRegenConfirm(false)}
+    />
     <div className="flex flex-col h-full">
       <TopBar
         title="Repurpose"
@@ -421,6 +498,7 @@ function RepurposePageInner() {
         </div>
       </div>
     </div>
+    </>
   )
 }
 

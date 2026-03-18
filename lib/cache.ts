@@ -29,9 +29,9 @@ export function cacheDelete(key: string): void {
 
 // Deletes all keys that start with `prefix`
 export function cacheDeletePrefix(prefix: string): void {
-  for (const key of store.keys()) {
+  Array.from(store.keys()).forEach((key) => {
     if (key.startsWith(prefix)) store.delete(key)
-  }
+  })
 }
 
 // Check cache first; on miss call fetcher(), store result, return it.

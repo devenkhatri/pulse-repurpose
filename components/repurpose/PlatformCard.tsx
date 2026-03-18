@@ -8,6 +8,7 @@ import { StatusBadge } from "@/components/dashboard/StatusBadge"
 import { ApproveButton } from "@/components/repurpose/ApproveButton"
 import { ImagePreview } from "@/components/repurpose/ImagePreview"
 import { HashtagSuggestions } from "@/components/repurpose/HashtagSuggestions"
+import { ConfirmDialog } from "@/components/shared/ConfirmDialog"
 import { useRepurposeStore } from "@/stores/repurposeStore"
 import { PLATFORM_RULES } from "@/lib/platform-rules"
 import { cn } from "@/lib/utils"
@@ -42,6 +43,7 @@ export function PlatformCard({
   const [isPublishing, setIsPublishing] = useState(false)
   const [isApproving, setIsApproving] = useState(false)
   const [newHashtag, setNewHashtag] = useState("")
+  const [showDuplicateConfirm, setShowDuplicateConfirm] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const rules = PLATFORM_RULES[platform]
@@ -85,6 +87,15 @@ export function PlatformCard({
   const handleApprove = async () => {
     if (isApproving) return
     const newApproved = !isApproved
+
+    // Warn if over character limit — but still allow approval
+    if (newApproved && isOverLimit) {
+      toast.warning(
+        `${rules.label} is ${charCount - rules.maxChars} chars over the ${rules.maxChars.toLocaleString()} limit — approved anyway`,
+        { duration: 4000 }
+      )
+    }
+
     setIsApproving(true)
     setVariantApproved(platform, newApproved)
 
@@ -120,8 +131,19 @@ export function PlatformCard({
     }
   }
 
-  const handlePublish = async () => {
+  const doPublish = async () => {
     if (isPublishing) return
+
+    // Validate schedule time: must be at least 15 minutes in the future
+    if (scheduledAt) {
+      const scheduledMs = new Date(scheduledAt).getTime()
+      const minMs = Date.now() + 15 * 60 * 1000
+      if (scheduledMs < minMs) {
+        toast.error("Scheduled time must be at least 15 minutes in the future")
+        return
+      }
+    }
+
     setIsPublishing(true)
     try {
       await axios.post("/api/publish", {
@@ -148,6 +170,18 @@ export function PlatformCard({
     }
   }
 
+  const handlePublish = () => {
+    // Duplicate publish prevention: warn if already scheduled or published
+    if (
+      platformVariant.status === "scheduled" ||
+      platformVariant.status === "published"
+    ) {
+      setShowDuplicateConfirm(true)
+      return
+    }
+    void doPublish()
+  }
+
   const handleRemoveHashtag = (tag: string) => {
     setVariantHashtags(platform, hashtags.filter((h) => h !== tag))
   }
@@ -163,6 +197,18 @@ export function PlatformCard({
     platformVariant.status === "published" || platformVariant.status === "scheduled"
 
   return (
+    <>
+    <ConfirmDialog
+      open={showDuplicateConfirm}
+      title={`${rules.label} is already ${platformVariant.status}`}
+      description={`This post is already ${platformVariant.status} for ${rules.label}. Publish again?`}
+      confirmLabel="Publish again"
+      onConfirm={() => {
+        setShowDuplicateConfirm(false)
+        void doPublish()
+      }}
+      onCancel={() => setShowDuplicateConfirm(false)}
+    />
     <div
       className={cn(
         "bg-[#161616] border rounded-xl p-4 space-y-3 transition-all cursor-pointer",
@@ -329,5 +375,6 @@ export function PlatformCard({
         </div>
       )}
     </div>
+    </>
   )
 }
