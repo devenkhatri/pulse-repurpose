@@ -31,6 +31,18 @@ const STATUS_FILTERS = [
 
 const TABLE_PLATFORMS: Platform[] = ["twitter", "threads", "instagram", "facebook", "skool"]
 
+type SortColumn = "date" | "linkedinText" | Platform
+type SortDirection = "asc" | "desc"
+interface SortState { column: SortColumn; direction: SortDirection }
+
+const STATUS_PRIORITY: Record<PostStatus, number> = {
+  published: 0,
+  approved: 1,
+  scheduled: 2,
+  pending: 3,
+  failed: 4,
+}
+
 interface PostsTableProps {
   posts: LinkedInPost[]
   loading: boolean
@@ -45,9 +57,19 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
   const [selectedPost, setSelectedPost] = useState<LinkedInPost | null>(null)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [sort, setSort] = useState<SortState>({ column: "date", direction: "desc" })
+
+  function handleSort(column: SortColumn) {
+    setSort((prev) =>
+      prev.column === column
+        ? { column, direction: prev.direction === "desc" ? "asc" : "desc" }
+        : { column, direction: "desc" }
+    )
+  }
 
   const filteredPosts = useMemo(() => {
-    return posts.filter((post) => {
+    const afterFilter = posts.filter((post) => {
       // Platform filter: show post if any platform variant matches
       if (platformFilter !== "all") {
         const variant = post.platforms[platformFilter as Platform]
@@ -82,7 +104,29 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
 
       return true
     })
-  }, [posts, platformFilter, statusFilter, dateFrom, dateTo])
+
+    const afterSearch = searchQuery.trim()
+      ? afterFilter.filter((post) => {
+          const q = searchQuery.toLowerCase()
+          if (post.linkedinText?.toLowerCase().includes(q)) return true
+          return TABLE_PLATFORMS.some((p) => post.platforms[p]?.text?.toLowerCase().includes(q))
+        })
+      : afterFilter
+
+    return [...afterSearch].sort((a, b) => {
+      let cmp = 0
+      if (sort.column === "date") {
+        cmp = a.postedAt.localeCompare(b.postedAt)
+      } else if (sort.column === "linkedinText") {
+        cmp = (a.linkedinText ?? "").localeCompare(b.linkedinText ?? "")
+      } else {
+        const pa = STATUS_PRIORITY[a.platforms[sort.column as Platform].status]
+        const pb = STATUS_PRIORITY[b.platforms[sort.column as Platform].status]
+        cmp = pa - pb
+      }
+      return sort.direction === "asc" ? cmp : -cmp
+    })
+  }, [posts, platformFilter, statusFilter, dateFrom, dateTo, searchQuery, sort])
 
   if (loading) {
     return (
@@ -102,6 +146,17 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
 
   return (
     <>
+      {/* Search bar */}
+      <div className="mb-3">
+        <Input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search posts…"
+          className="h-8 text-xs bg-[#161616] border-white/10 max-w-sm"
+        />
+      </div>
+
       {/* Filters row */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         {/* Platform pills */}
@@ -154,7 +209,7 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
             placeholder="To"
           />
 
-          {(platformFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo) && (
+          {(platformFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo || searchQuery) && (
             <Button
               size="sm"
               variant="ghost"
@@ -164,6 +219,7 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
                 setStatusFilter("all")
                 setDateFrom("")
                 setDateTo("")
+                setSearchQuery("")
               }}
             >
               Clear
@@ -178,11 +234,34 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
           <table className="w-full text-left">
             <thead>
               <tr className="border-b border-white/10 bg-white/[0.02]">
-                <th className="px-4 py-3 text-xs font-medium text-zinc-500 whitespace-nowrap">Date</th>
-                <th className="px-4 py-3 text-xs font-medium text-zinc-500">LinkedIn Post</th>
+                <th
+                  className="px-4 py-3 text-xs font-medium text-zinc-500 whitespace-nowrap cursor-pointer select-none hover:text-zinc-300 transition-colors"
+                  onClick={() => handleSort("date")}
+                >
+                  Date{" "}
+                  <span className="ml-0.5 text-zinc-500">
+                    {sort.column === "date" ? (sort.direction === "desc" ? "↓" : "↑") : "↕"}
+                  </span>
+                </th>
+                <th
+                  className="px-4 py-3 text-xs font-medium text-zinc-500 cursor-pointer select-none hover:text-zinc-300 transition-colors"
+                  onClick={() => handleSort("linkedinText")}
+                >
+                  LinkedIn Post{" "}
+                  <span className="ml-0.5 text-zinc-500">
+                    {sort.column === "linkedinText" ? (sort.direction === "desc" ? "↓" : "↑") : "↕"}
+                  </span>
+                </th>
                 {TABLE_PLATFORMS.map((p) => (
-                  <th key={p} className="px-4 py-3 text-xs font-medium text-zinc-500 capitalize whitespace-nowrap">
-                    {p}
+                  <th
+                    key={p}
+                    className="px-4 py-3 text-xs font-medium text-zinc-500 capitalize whitespace-nowrap cursor-pointer select-none hover:text-zinc-300 transition-colors"
+                    onClick={() => handleSort(p)}
+                  >
+                    {p}{" "}
+                    <span className="ml-0.5 text-zinc-500">
+                      {sort.column === p ? (sort.direction === "desc" ? "↓" : "↑") : "↕"}
+                    </span>
                   </th>
                 ))}
                 <th className="px-4 py-3 text-xs font-medium text-zinc-500">Actions</th>
@@ -195,7 +274,11 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
                     colSpan={TABLE_PLATFORMS.length + 3}
                     className="px-4 py-12 text-center text-sm text-zinc-600"
                   >
-                    {posts.length === 0 ? "No posts found. Connect your Google Sheet to get started." : "No posts match the current filters."}
+                    {posts.length === 0
+                      ? "No posts found. Connect your Google Sheet to get started."
+                      : searchQuery
+                        ? `No posts match "${searchQuery}".`
+                        : "No posts match the current filters."}
                   </td>
                 </tr>
               ) : (
