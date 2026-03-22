@@ -88,7 +88,7 @@ export function SourcePostPanel({
         <p className="text-xs font-medium text-[#888888] mb-2 uppercase tracking-wider">
           Original LinkedIn Post
         </p>
-        <p className="text-sm text-[#F5F5F5] leading-relaxed whitespace-pre-wrap font-mono">
+        <p className="text-sm text-[#F5F5F5] leading-relaxed whitespace-pre-wrap">
           {post.linkedinText}
         </p>
       </div>

@@ -257,6 +257,125 @@ Ensure visual consistency across all generated images and let users preview post
 - **Repurpose page**: "Preview" toggle on each platform card — switches between edit mode and preview mode
 - Preview is read-only, shows hashtags inline in platform-native position, image at correct aspect ratio
 
+### Session 18 — Bug Fixes & Data Flow Gaps (Audit March 2026)
+
+Full audit of all frontend ↔ n8n data flow gaps found in March 2026 review.
+Fixes applied in priority order: Critical → High → Medium → Low.
+
+#### Critical — Data Loss / Runtime Crashes
+
+1. **Hashtag changes never reach Sheet** — `handleRemoveHashtag`, `handleAddHashtag`, and `HashtagSuggestions.handleAdd` only update Zustand local state; neither `handleSaveEdit` nor `handleApprove` include `hashtags` in the PATCH payload. Fix: add a `handleSaveHashtags` that PATCHes on add/remove, and include hashtags in the approve PATCH.
+
+2. **Poll loop wipes local edits every 3s** — `startPolling` calls `initVariantsFromPost(post)` on every tick, which rebuilds all variant state from Sheet, nuking unsaved text/hashtag edits. Fix: `initVariantsFromPost` should skip platforms that the user is actively editing (track a `dirtyPlatforms` set).
+
+3. **Null crash on missing platform data** — `post.platforms[p].status` accessed without optional chaining in `StatsBar` (dashboard/page.tsx:23,29,39), `PostSlideOver` (line 125), `PostsTable` (line 81). Fix: add `?.` optional chaining throughout.
+
+4. **n8n failure callback does nothing** — `/api/callback/repurpose` and `/api/callback/images` with `status:"failed"` only log; Sheet status stays pending, UI polls for 5 min. Fix: call `updateStatus(postId, platform, "failed")` for all selected platforms on failure.
+
+5. **Image regeneration button never wired** — `ImagePreview` accepts `onRegenerate` prop that renders a hover button, but `PlatformCard` never passes it. Fix: add `onRegenerate` handler in `PlatformCard` that calls `POST /api/trigger/images` for that platform only.
+
+#### High — Broken Features
+
+6. **`callbackUrl` is `undefined/api/callback/...` if `NEXT_PUBLIC_APP_URL` unset** — `n8n.ts` line 36 and 89 use template literal with optional env var; n8n can't reach undefined. Fix: add `NEXT_PUBLIC_APP_URL` as a required/warned env var in `lib/env.ts`; fallback to `http://localhost:3000` with console.warn.
+
+7. **Re-generation resets previously approved platforms** — After firing the content webhook, `updateMultiplePlatforms` resets ALL selected platforms to `{ status: "pending" }`, erasing prior approvals. Fix: only reset platforms that were explicitly selected for this generation run and currently have `status: "pending"`.
+
+8. **No platform selection UI** — `selectedPlatforms` defaults to all 5 and `setSelectedPlatforms` exists in the store, but `SourcePostPanel` has no checkboxes to toggle individual platforms. Fix: add platform toggle checkboxes to `SourcePostPanel`.
+
+9. **Partial generation success never detected** — `allPlatformsHaveText` requires all selected platforms; if n8n only generates 4/5, polling times out. Fix: detect partial success (at least 1 new platform has text that didn't before) and surface it.
+
+#### Medium — Logic & Data Integrity
+
+10. **Hashtags excluded from all PATCH calls** — `handleApprove` and `handleSaveEdit` in `PlatformCard` never include `hashtags` in the PATCH body even though the schema supports it. Fix: always include current hashtags in any PATCH that updates a variant.
+
+11. **Immediate publish stuck as "scheduled"** — `/api/publish` sets status to `"scheduled"` even for `scheduledAt: null` (post now). No `/api/callback/publish` route exists, so status never advances to `"published"`. Fix: add `POST /api/callback/publish` route; set status to `"published"` for immediate publishes and `"scheduled"` for future ones in the publish webhook response.
+
+12. **Dashboard approve: optimistic update, no re-fetch on failure** — `handleApprove` in `dashboard/page.tsx` calls `updateVariantStatus` optimistically but doesn't re-fetch from Sheet if the PATCH fails. Fix: wrap in try/catch and re-fetch on error to revert stale UI.
+
+13. **"Pending Approval" stat counts wrong status** — `StatsBar` counts `status === "approved"` for "Pending Approval". Should count platforms with text generated but not yet approved (`status === "pending"` AND `text !== null`). Fix: correct the stat logic.
+
+#### Low — UX / Observability
+
+14. **fal.ai images expire with no refresh mechanism** — URL expiry is noted in UI but no action exists. Fix: add a "Re-fetch image" button in `ImagePreview` that fires `POST /api/trigger/images` for that single platform.
+
+15. **AI chat edits show "edited" badge same as manual edits** — `AIChatSidebar` PATCHes with `isEdited: true`, conflating AI edits with user edits. Fix: add `isAiEdited: boolean` to the variant patch so the badge reads "ai-edited" differently (or simply don't mark `isEdited` for AI chat changes).
+
+16. **Missing env var causes silent callback failures** — `NEXT_PUBLIC_APP_URL` is optional in `env.ts` but critical for n8n callbacks. Fix: add a startup console.warn when webhook URLs are configured but `NEXT_PUBLIC_APP_URL` is missing.
+
+17. **No `/api/callback/publish` → status never → "published"** — After n8n posts to a social platform, there is no callback route for n8n to signal success. Fix: implement `POST /api/callback/publish` that accepts `{ postId, platform, status: "published"|"failed", publishedUrl?, error? }` and updates Sheet + content file accordingly.
+
+### Session 19 — Frontend Usability Audit & Standards Fixes (Audit March 2026)
+
+Full audit of all frontend components against industry-standard web application usability practices (Nielsen's heuristics, WCAG 2.1, patterns from Buffer, Linear, Notion, Figma). Fixes applied in priority order: Critical → High → Medium → Low.
+
+---
+
+#### Critical — User Trust / Data Loss Risk
+
+1. **No autosave status indicator** — `PlatformCard` saves text on textarea `onBlur` (`handleSaveEdit`) but shows no "Saving..." or "Saved ✓" state. Users don't know if their edit was persisted. Fix: add a transient "Saved ✓" indicator (or inline spinner) next to the character count after a successful blur-save PATCH. Use a local `saveState: 'idle' | 'saving' | 'saved' | 'error'` state, auto-reset to `idle` after 2s.
+
+2. **No unsaved-changes navigation warning** — When a user edits a platform card (`isEdited = true`) and navigates away (clicks Sidebar link or browser back), edits may be lost silently. Fix: add a `beforeunload` event listener in `RepurposePage` when any `dirtyPlatforms.size > 0`; show a browser-native "Leave page?" dialog. Also add a Next.js route-change guard via `router.beforePopState` (or `useBeforeUnload` pattern).
+
+3. **Date range inputs have no visible labels** — `PostsTable` renders `<Input type="date" placeholder="From" />` and `<Input type="date" placeholder="To" />`. Native date inputs suppress placeholder text in all major browsers — users see an empty field with no label. Fix: replace placeholder with a `<label>` element or at minimum an `aria-label="Date from"` / `aria-label="Date to"`. Add visible `<span>` labels above each input ("From" / "To") in the filter row.
+
+4. **No results count / filter summary** — `PostsTable` shows filtered results with no "Showing X of Y posts" text. When filters are active, users cannot tell if the empty or short result set is a filter issue or a real empty state. Fix: add a `<p>Showing {filteredPosts.length} of {posts.length} posts</p>` line below the filter row, conditionally shown when any filter is active.
+
+5. **PostSlideOver has no focus trap** — When the slide-over is open, pressing Tab continues to navigate interactive elements behind the backdrop (the table rows). Fix: use Radix UI `Dialog` or implement a focus trap hook (`focus-trap-react` or manual `focusable elements` clamp) so Tab cycles only within the panel while it is open.
+
+---
+
+#### High — Broken/Missing Industry-Standard Patterns
+
+6. **PostRow has no visual affordance that it is clickable** — Table rows in `PostRow` have an `onClick` handler but no `cursor-pointer` class and no background highlight on hover. Users have no cue that rows are interactive. Fix: add `cursor-pointer hover:bg-white/[0.02] transition-colors` to the `<tr>` element in `PostRow`.
+
+7. **Table `<th>` elements missing `scope="col"`** — Every `<th>` in `PostsTable` lacks `scope="col"`, which is required for screen readers to correctly interpret data table headers (WCAG 1.3.1). Fix: add `scope="col"` to all `<th>` elements in the `<thead>`.
+
+8. **Platform content textareas use `font-mono`** — `PlatformCard` textarea and `SourcePostPanel` original post preview both apply `font-mono` (monospace). Social media content is not code; monospace fonts reduce readability and conflict with the content's purpose. Fix: remove `font-mono` from the `<textarea>` in `PlatformCard` and the `<p>` in `SourcePostPanel`. Use the app's default sans-serif (Geist) instead.
+
+9. **Stats bar tiles are not interactive** — Clicking "Pending Approval: 5" does nothing. The industry standard (Buffer, HubSpot, Linear) is that clicking a dashboard stat tile filters the related table. Fix: make each `StatsBar` tile clickable; clicking "Pending Approval" sets `statusFilter = "pending"` in `PostsTable`; clicking "Published This Week" sets `statusFilter = "published"` + dateFrom/dateTo to the current week. Requires lifting `setStatusFilter` / `setDateFrom` / `setDateTo` up to `DashboardPage` and passing them as props to both `StatsBar` and `PostsTable`.
+
+10. **Sidebar footer hardcodes "localhost:3000"** — The `Sidebar` footer renders `<p className="text-xs text-white/20">localhost:3000</p>`. This is a dev artifact that will appear as-is in any deployment. Fix: replace with the app version from `package.json` (`v{process.env.npm_package_version}`) or remove the footer entirely.
+
+11. **No keyboard shortcut discovery** — The app has 4 keyboard shortcuts (Cmd+Enter, Cmd+R, Cmd+S, Escape) but they are completely undiscoverable — no tooltips, no help panel, no `?` key trigger. Fix: (a) Add `title` tooltips to the "Approve all" button and the "Repurpose text" button showing their shortcuts (`⌘↵`, `⌘R`). (b) Add a `?` key global shortcut that opens a small `KeyboardShortcutsDialog` listing all shortcuts. Display the dialog as a `Dialog` with a table of shortcut → description pairs.
+
+12. **AI Chat has no revert-to-original button** — After an AI edit, the word-level diff view shows changes but users can only undo by typing manually. There is no single-click "Revert" button. Fix: on each AI `assistantEntry` in `AIChatSidebar`, add a "Revert" button alongside the diff view. Clicking it calls `setVariantText(activePlatform, entry.previousText)` and PATCHes the server to restore the previous text, then removes the assistantEntry from chat history.
+
+13. **Empty states lack actionable CTAs** — "No posts found. Connect your Google Sheet to get started." and "Select a post from the Dashboard to repurpose it." are plain text with no icon or action button. Fix: replace with structured empty states: a muted icon (e.g. `Inbox` or `FileText` from lucide), a title, a body line, and an action button where relevant (e.g. "Go to Settings" on the brand-voice guard empty state; "Go to Dashboard" on the repurpose no-postId state).
+
+14. **PostSlideOver has no slide-in animation** — The panel appears instantly with no transition. Fix: add `transition-transform duration-300 ease-out` with `translate-x-full` as the closed state and `translate-x-0` as the open state, driven by the `post !== null` condition. Use a CSS transition rather than a JS animation library to keep it lightweight.
+
+---
+
+#### Medium — UX Polish / Accessibility Gaps
+
+15. **Settings tab changes discarded silently** — `BrandVoiceForm` tracks no `isDirty` state. If the user edits fields and clicks the "Hashtag Bank" tab without saving, all changes are silently discarded. Fix: track form dirty state (react-hook-form's `formState.isDirty` is already available via the `useForm` hook). Show an unsaved-changes badge on the "Brand Voice" tab trigger (`● Brand Voice`) and a confirmation dialog if the user switches tabs with unsaved changes.
+
+16. **Calendar page has no filter/search** — The Calendar view shows all approved/scheduled/published events with no way to filter by platform or narrow to a date range without scrolling the calendar manually. Fix: add a filter bar above `CalendarView` with platform toggle pills (same component pattern as `PostsTable`). Filtered platforms hide their events from the calendar. Add a "Today" button to reset the calendar view to the current month.
+
+17. **No toast deduplication** — Rapid errors during polling (e.g. network failures every 3s) can stack dozens of identical toasts. Fix: use `sonner`'s built-in toast ID deduplication: `toast.error(msg, { id: 'poll-error' })`. The same ID will update the existing toast instead of creating a new one. Apply a stable ID for all recurring error categories (polling errors, save failures).
+
+18. **Generation status panel shows no per-platform progress** — `GenerationStatusPanel` shows only "Generating text..." or "Generating images..." with a global elapsed timer. During generation, users can't see which platforms are done vs waiting. Fix: in `GenerationStatusPanel`, receive `selectedPlatforms` and `activePost` as props. For each platform, show a small row with a checkmark (text present) or spinner (still waiting) to indicate individual completion.
+
+19. **`Cmd+R` keyboard shortcut conflicts with browser refresh** — While `e.preventDefault()` is called, the shortcut re-purposes an extremely well-known browser action. Users testing on a slow day may trigger an accidental re-generation. Fix: change the regenerate shortcut to `Cmd+Shift+R` (less common, still discoverable) and update the tooltip in the keyboard shortcuts dialog.
+
+20. **No skip-to-content link** — There is no "Skip to main content" anchor for keyboard-only and screen reader users, which is required by WCAG 2.4.1 (Level A). Fix: add `<a href="#main-content" className="sr-only focus:not-sr-only ...">Skip to content</a>` as the first element in `app/layout.tsx`, and add `id="main-content"` to the `<main>` wrapper.
+
+21. **AI Chat sidebar cannot be collapsed** — The right panel is always 280px wide even when the user has no active platform or has finished all AI edits. On a narrow viewport this wastes space. Fix: add a collapse toggle button (chevron icon) on the panel header that sets a `chatCollapsed` local state. When collapsed, the panel shrinks to 40px (icon-only strip) and the center column expands. Persist collapse state in `localStorage`.
+
+---
+
+#### Low — Observability / Minor Polish
+
+22. **Table sort state resets on navigation** — The sort column/direction resets every time the user navigates away and returns to the Dashboard. Fix: persist sort state in `localStorage` (key: `pulse.dashboard.sort`) or in `postsStore` alongside the posts data so it survives navigation.
+
+23. **Calendar drag-and-drop rescheduling not enabled** — `@fullcalendar/interaction` is installed but drag-and-drop rescheduling is not wired. Fix: enable `editable={true}` on the `FullCalendar` component and implement the `eventDrop` callback to call `handleReschedule(event.extendedProps.postId, event.extendedProps.platform, event.start.toISOString())`.
+
+24. **Per-platform generation progress not surfaced during polling** — During text generation, each `PlatformCard` shows a skeleton if `!platformVariant.text`, but there is no aggregate view showing "3 of 5 platforms done". Fix: in `RepurposePage`, compute `completedPlatforms = selectedPlatforms.filter(p => activePost?.platforms[p]?.text)` and show "X/Y platforms" in the `GenerationStatusPanel` sub-header.
+
+25. **No "Select All" checkbox on PostsTable for bulk actions** — Pending Session 14 (Bulk Repurpose), the table will need a select-all checkbox. Pre-wire: add a checkbox in the `<th>` header cell and individual checkboxes in each `PostRow` with an `indeterminate` state when partially selected. This completes the UI shell for Session 14 to wire up.
+
+26. **AIChatSidebar placeholder text is passive** — When no platform is focused, the placeholder reads "Click a platform card to focus." This is correct but passive. Fix: change to "Select a platform card on the left to start editing with AI." to make the instruction spatially explicit.
+
 ---
 
 ## Session 1 — Complete File List

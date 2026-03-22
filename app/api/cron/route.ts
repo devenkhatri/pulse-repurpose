@@ -402,7 +402,50 @@ export async function POST(req: NextRequest) {
     await rebuildHeartbeat().catch(() => {})
   }
 
-  // ── Operation 8 — Completion log ─────────────────────────────────────────
+  // ── Operation 9 — Performance learning (analytics → learnings.md) ────────
+  try {
+    const posts = await getAllPosts({})
+    const ANALYTICS_PLATFORMS = ["twitter", "threads", "instagram", "facebook"] as const
+    const HIGH_THRESHOLD = 5    // % engagement rate
+    const LOW_THRESHOLD = 1     // %
+    const MIN_IMPRESSIONS = 10
+    let op9Updated = 0
+
+    for (const post of posts) {
+      for (const platform of ANALYTICS_PLATFORMS) {
+        const v = post.platforms[platform]
+        if (!v?.fetchedAt || v.engagementRate == null) continue
+
+        if (v.engagementRate >= HIGH_THRESHOLD) {
+          await appendToLearnings(
+            platform,
+            `${platform}: HIGH performer — post ${post.id} ` +
+            `(${v.engagementRate.toFixed(1)}% engagement, ${v.impressions ?? 0} impressions). ` +
+            `Replicate tone/format for this platform.`
+          ).catch(() => {})
+          op9Updated++
+        } else if (v.engagementRate < LOW_THRESHOLD && (v.impressions ?? 0) >= MIN_IMPRESSIONS) {
+          await appendToLearnings(
+            platform,
+            `${platform}: LOW performer — post ${post.id} ` +
+            `(${v.engagementRate.toFixed(1)}% engagement, ${v.impressions ?? 0} impressions). ` +
+            `Avoid similar structure on this platform.`
+          ).catch(() => {})
+          op9Updated++
+        }
+      }
+    }
+
+    result.learningsUpdated += op9Updated
+    result.operations["op9_performance_learning"] = "completed"
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    result.operations["op9_performance_learning"] = "failed"
+    result.errors.push(`Operation 9 (performance learning): ${msg}`)
+    console.error("[cron] Operation 9 failed:", msg)
+  }
+
+  // ── Operation 10 — Completion log ─────────────────────────────────────────
   const endTime = new Date()
   const durationMs = endTime.getTime() - startTime.getTime()
   result.completed = endTime.toISOString()
@@ -417,7 +460,7 @@ export async function POST(req: NextRequest) {
     `\n## Heartbeat.md updated: ✓\n- Completed: ${endTime.toISOString()}\n- Duration: ${Math.round(durationMs / 1000)}s\n`
   ).catch(() => {})
 
-  result.operations["op8_completion"] = "completed"
+  result.operations["op10_completion"] = "completed"
 
   return NextResponse.json(result)
 }

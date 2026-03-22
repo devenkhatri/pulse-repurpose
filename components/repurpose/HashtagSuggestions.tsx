@@ -9,6 +9,7 @@ import type { Platform } from "@/types"
 
 interface HashtagSuggestionsProps {
   platform: Platform
+  postId: string
   postText: string
   existingHashtags: string[]
   maxHashtags: number
@@ -16,6 +17,7 @@ interface HashtagSuggestionsProps {
 
 export function HashtagSuggestions({
   platform,
+  postId,
   postText,
   existingHashtags,
   maxHashtags,
@@ -51,13 +53,22 @@ export function HashtagSuggestions({
     }
   }
 
-  const handleAdd = (tag: string) => {
+  const handleAdd = async (tag: string) => {
     if (existingHashtags.length >= maxHashtags) {
       toast.error(`Max ${maxHashtags} hashtags for this platform`)
       return
     }
-    setVariantHashtags(platform, [...existingHashtags, tag])
+    const updated = [...existingHashtags, tag]
+    setVariantHashtags(platform, updated)
     setSuggestions((prev) => prev.filter((s) => s !== tag))
+    try {
+      await axios.patch(`/api/posts/${postId}`, {
+        platform,
+        variant: { hashtags: updated },
+      })
+    } catch {
+      toast.error("Failed to save hashtag")
+    }
   }
 
   return (

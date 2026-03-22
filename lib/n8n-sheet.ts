@@ -217,6 +217,29 @@ export async function writeImagePrompts(
 }
 
 /**
+ * Write analytics metrics for a single platform variant.
+ * Called by /api/callback/analytics after n8n Workflow 4 fetches engagement data.
+ */
+export async function updateAnalytics(
+  postId: string,
+  platform: Platform,
+  metrics: {
+    impressions: number
+    likes: number
+    comments: number
+    shares: number
+    engagementRate: number
+    fetchedAt: string
+  }
+): Promise<void> {
+  await sheetRequest(
+    "UPDATE_ANALYTICS",
+    { postId, platform, metrics },
+    10000
+  )
+}
+
+/**
  * Lightweight status update — used by publish flow callbacks.
  * Optionally sets publishedAt and error.
  */

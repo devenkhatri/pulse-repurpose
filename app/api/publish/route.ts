@@ -73,6 +73,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. Build publish payload
+    const { env } = await import("@/lib/env")
     const publishPayload = {
       platform: platform as Platform,
       text: variant.text,
@@ -81,6 +82,7 @@ export async function POST(req: NextRequest) {
       scheduledAt,
       sheetRowId: post.id,
       postId,
+      callbackUrl: `${env.NEXT_PUBLIC_APP_URL}/api/callback/publish`,
     }
 
     // 4. Fire publish webhook
@@ -101,11 +103,18 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // 5. Update Sheet + content file status to scheduled
-    await updateStatus(postId, platform as Platform, "scheduled")
+    // 5. Update Sheet + content file status
+    // Immediate publishes → "published" right away (n8n will also call /api/callback/publish)
+    // Scheduled publishes → "scheduled" until n8n calls back after the post goes live
+    const newStatus = scheduledAt ? "scheduled" : "published"
+    const now = new Date().toISOString()
+    await updateStatus(postId, platform as Platform, newStatus, {
+      publishedAt: scheduledAt ? undefined : now,
+    })
     await updatePlatformFileMeta(postId, platform as Platform, {
-      status: "scheduled",
-      scheduled_at: scheduledAt ?? new Date().toISOString(),
+      status: newStatus,
+      scheduled_at: scheduledAt ?? null,
+      published_at: scheduledAt ? null : now,
     })
 
     return NextResponse.json({ success: true })

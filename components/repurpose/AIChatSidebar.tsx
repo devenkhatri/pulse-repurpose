@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react"
 import axios from "axios"
-import { Send, Loader2, Bot, User } from "lucide-react"
+import { Send, Loader2, Bot, User, Undo2 } from "lucide-react"
 import { toast } from "sonner"
 import { useRepurposeStore } from "@/stores/repurposeStore"
 import { PLATFORM_RULES } from "@/lib/platform-rules"
@@ -98,7 +98,7 @@ export function AIChatSidebar({
   activePlatform,
   hasTextVariants,
 }: AIChatSidebarProps) {
-  const { variants, setVariantText, chatHistory, addChatMessage, clearChatHistory } =
+  const { variants, setVariantTextFromAI, chatHistory, addChatMessage, clearChatHistory, setChatHistory } =
     useRepurposeStore()
 
   const [input, setInput] = useState("")
@@ -128,7 +128,7 @@ export function AIChatSidebar({
         <p className="text-sm text-[#555555] text-center leading-relaxed">
           {!hasTextVariants
             ? "Waiting for text generation to complete..."
-            : "Click a platform card to start editing with AI."}
+            : "Select a platform card on the left to start editing with AI."}
         </p>
       </div>
     )
@@ -172,14 +172,14 @@ export function AIChatSidebar({
 
       const { updatedText, explanation } = res.data
 
-      // Update the variant text in the store
-      setVariantText(activePlatform, updatedText)
+      // Update the variant text in the store (AI edit — does not mark as manually edited)
+      setVariantTextFromAI(activePlatform, updatedText)
 
-      // Save the PATCH to the server in the background
+      // Save the PATCH to the server in the background.
       axios
         .patch(`/api/posts/${postId}`, {
           platform: activePlatform,
-          variant: { text: updatedText, isEdited: true },
+          variant: { text: updatedText },
         })
         .catch(() => {
           // Non-fatal — text is already updated locally
@@ -211,6 +211,31 @@ export function AIChatSidebar({
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const handleRevert = (entry: ChatEntry, idx: number) => {
+    if (!activePlatform || !entry.previousText) return
+
+    // Restore previous text
+    setVariantTextFromAI(activePlatform, entry.previousText)
+
+    // PATCH the server
+    axios
+      .patch(`/api/posts/${postId}`, {
+        platform: activePlatform,
+        variant: { text: entry.previousText },
+      })
+      .catch(() => {})
+
+    // Remove this assistant entry and its paired user entry (idx - 1)
+    const newEntries = localEntries.filter((_, i) => i !== idx && i !== idx - 1)
+    setLocalEntries(newEntries)
+
+    // Sync to store
+    setChatHistory(
+      activePlatform,
+      newEntries.map((e) => ({ role: e.role, content: e.content, timestamp: e.timestamp }))
+    )
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -277,10 +302,21 @@ export function AIChatSidebar({
                 entry.previousText != null &&
                 entry.updatedText != null &&
                 entry.previousText !== entry.updatedText && (
-                  <DiffView
-                    oldText={entry.previousText}
-                    newText={entry.updatedText}
-                  />
+                  <div className="space-y-1">
+                    <DiffView
+                      oldText={entry.previousText}
+                      newText={entry.updatedText}
+                    />
+                    {/* Revert button */}
+                    <button
+                      onClick={() => handleRevert(entry, idx)}
+                      className="ml-7 flex items-center gap-1 text-[10px] text-[#555555] hover:text-amber-400 transition-colors"
+                      title="Revert to text before this AI edit"
+                    >
+                      <Undo2 className="w-2.5 h-2.5" />
+                      Revert
+                    </button>
+                  </div>
                 )}
             </div>
           ))

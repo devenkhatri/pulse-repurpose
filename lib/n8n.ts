@@ -43,18 +43,25 @@ export async function fireContentRepurposeWebhook(params: {
     await axios.post(url, payload, { timeout: 30000 })
     console.log(`[n8n] Content repurpose webhook ack'd for postId=${post.id}`)
 
-    // Best-effort: mark all selected platforms as pending in Sheet
-    const variants = platforms.reduce<
+    // Best-effort: mark only platforms that are currently pending as pending.
+    // Platforms already approved/scheduled/published are left untouched so
+    // re-generating one platform doesn't erase prior approvals.
+    const pendingVariants = platforms.reduce<
       Partial<Record<Platform, { status: "pending" | "approved" | "scheduled" | "published" | "failed" }>>
     >((acc, p) => {
-      acc[p] = { status: "pending" }
+      const currentStatus = post.platforms[p]?.status
+      if (!currentStatus || currentStatus === "pending" || currentStatus === "failed") {
+        acc[p] = { status: "pending" }
+      }
       return acc
     }, {})
 
-    try {
-      await updateMultiplePlatforms(post.id, variants)
-    } catch (e) {
-      console.warn("[n8n] Could not update platform statuses after trigger:", e)
+    if (Object.keys(pendingVariants).length > 0) {
+      try {
+        await updateMultiplePlatforms(post.id, pendingVariants)
+      } catch (e) {
+        console.warn("[n8n] Could not update platform statuses after trigger:", e)
+      }
     }
 
     return { success: true }

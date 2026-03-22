@@ -26,18 +26,33 @@ const TONE_SUGGESTIONS = [
 interface BrandVoiceFormProps {
   initialProfile: BrandVoiceProfile
   onSaved?: (profile: BrandVoiceProfile) => void
+  onDirtyChange?: (dirty: boolean) => void
 }
 
-export function BrandVoiceForm({ initialProfile, onSaved }: BrandVoiceFormProps) {
+export function BrandVoiceForm({ initialProfile, onSaved, onDirtyChange }: BrandVoiceFormProps) {
   const [profile, setProfile] = useState<BrandVoiceProfile>(initialProfile)
   const [toneInput, setToneInput] = useState("")
   const [saving, setSaving] = useState(false)
+  const [isDirty, setIsDirty] = useState(false)
+
+  function markDirty() {
+    if (!isDirty) {
+      setIsDirty(true)
+      onDirtyChange?.(true)
+    }
+  }
+
+  function markClean() {
+    setIsDirty(false)
+    onDirtyChange?.(false)
+  }
 
   const updateField = <K extends keyof BrandVoiceProfile>(
     key: K,
     value: BrandVoiceProfile[K]
   ) => {
     setProfile((prev) => ({ ...prev, [key]: value }))
+    markDirty()
   }
 
   // Tone descriptor tag input
@@ -92,6 +107,7 @@ export function BrandVoiceForm({ initialProfile, onSaved }: BrandVoiceFormProps)
 
       const { profile: saved } = (await res.json()) as { profile: BrandVoiceProfile }
       setProfile(saved)
+      markClean()
       onSaved?.(saved)
 
       if (saved.examplePosts.length === 0) {

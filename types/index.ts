@@ -25,6 +25,14 @@ export interface PlatformVariant {
   approvedAt: string | null         // ISO date string
   isEdited: boolean
   error: string | null
+  // Analytics fields — written by n8n Workflow 4
+  platformPostId: string | null     // Native post ID on the platform
+  impressions: number | null
+  likes: number | null
+  comments: number | null
+  shares: number | null
+  engagementRate: number | null     // (likes+comments+shares) / impressions * 100
+  fetchedAt: string | null          // ISO date string — when analytics were last fetched
 }
 
 export interface BrandVoiceProfile {
@@ -131,6 +139,7 @@ export interface PublishWebhookPayload {
   scheduledAt: string | null
   sheetRowId: string
   postId: string
+  callbackUrl: string               // App's /api/callback/publish endpoint
 }
 
 // n8n → App callback (after content or image generation is done)
@@ -166,6 +175,7 @@ export type SheetAction =
   | 'WRITE_CONTENT_PROMPTS'
   | 'WRITE_IMAGE_PROMPTS'
   | 'UPDATE_STATUS'
+  | 'UPDATE_ANALYTICS'
 
 export interface SheetWebhookRequest<A extends SheetAction = SheetAction> {
   action: A
@@ -203,6 +213,18 @@ export interface SheetActionPayload {
     postId: string
     platform: Platform
     status: PostStatus
+  }
+  UPDATE_ANALYTICS: {
+    postId: string
+    platform: Platform
+    metrics: {
+      impressions: number
+      likes: number
+      comments: number
+      shares: number
+      engagementRate: number
+      fetchedAt: string
+    }
   }
 }
 

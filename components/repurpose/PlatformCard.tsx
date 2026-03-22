@@ -14,6 +14,8 @@ import { PLATFORM_RULES } from "@/lib/platform-rules"
 import { cn } from "@/lib/utils"
 import type { Platform, PlatformVariant, RepurposeVariantDraft } from "@/types"
 
+type SaveState = "idle" | "saving" | "saved" | "error"
+
 interface PlatformCardProps {
   platform: Platform
   postId: string
@@ -24,6 +26,7 @@ interface PlatformCardProps {
   isActive: boolean
   onFocus: (platform: Platform) => void
   onRefresh: () => Promise<void>
+  onRegenerateImage?: (platform: Platform) => void
 }
 
 export function PlatformCard({
@@ -36,14 +39,17 @@ export function PlatformCard({
   isActive,
   onFocus,
   onRefresh,
+  onRegenerateImage,
 }: PlatformCardProps) {
-  const { setVariantText, setVariantApproved, setVariantHashtags } = useRepurposeStore()
+  const { setVariantText, setVariantApproved, setVariantHashtags, markClean } = useRepurposeStore()
 
   const [scheduledAt, setScheduledAt] = useState<string>("")
   const [isPublishing, setIsPublishing] = useState(false)
   const [isApproving, setIsApproving] = useState(false)
   const [newHashtag, setNewHashtag] = useState("")
   const [showDuplicateConfirm, setShowDuplicateConfirm] = useState(false)
+  const [saveState, setSaveState] = useState<SaveState>("idle")
+  const saveResetRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const rules = PLATFORM_RULES[platform]
@@ -61,6 +67,13 @@ export function PlatformCard({
     ta.style.height = "auto"
     ta.style.height = `${ta.scrollHeight}px`
   }, [text])
+
+  // Cleanup save-reset timer on unmount
+  useEffect(() => {
+    return () => {
+      if (saveResetRef.current) clearTimeout(saveResetRef.current)
+    }
+  }, [])
 
   if (isTextGenerating && !platformVariant.text) {
     return (
@@ -106,6 +119,7 @@ export function PlatformCard({
           status: newApproved ? "approved" : "pending",
           approvedAt: newApproved ? new Date().toISOString() : null,
           text: localVariant?.isEdited ? text : undefined,
+          hashtags,
           isEdited: localVariant?.isEdited,
         },
       })
@@ -119,14 +133,20 @@ export function PlatformCard({
   }
 
   const handleSaveEdit = async () => {
+    if (saveResetRef.current) clearTimeout(saveResetRef.current)
+    setSaveState("saving")
     try {
       await axios.patch(`/api/posts/${postId}`, {
         platform,
-        variant: { text, isEdited: true },
+        variant: { text, hashtags, isEdited: true },
       })
-      toast.success("Changes saved")
+      markClean(platform)
+      setSaveState("saved")
+      saveResetRef.current = setTimeout(() => setSaveState("idle"), 2000)
       await onRefresh()
     } catch {
+      setSaveState("error")
+      saveResetRef.current = setTimeout(() => setSaveState("idle"), 2000)
       toast.error("Failed to save changes")
     }
   }
@@ -182,15 +202,30 @@ export function PlatformCard({
     void doPublish()
   }
 
+  const saveHashtags = async (updated: string[]) => {
+    try {
+      await axios.patch(`/api/posts/${postId}`, {
+        platform,
+        variant: { hashtags: updated },
+      })
+    } catch {
+      toast.error("Failed to save hashtags")
+    }
+  }
+
   const handleRemoveHashtag = (tag: string) => {
-    setVariantHashtags(platform, hashtags.filter((h) => h !== tag))
+    const updated = hashtags.filter((h) => h !== tag)
+    setVariantHashtags(platform, updated)
+    void saveHashtags(updated)
   }
 
   const handleAddHashtag = () => {
     const tag = newHashtag.trim().replace(/^#/, "")
     if (!tag || hashtags.includes(tag)) return
-    setVariantHashtags(platform, [...hashtags, tag])
+    const updated = [...hashtags, tag]
+    setVariantHashtags(platform, updated)
     setNewHashtag("")
+    void saveHashtags(updated)
   }
 
   const isPublished =
@@ -263,14 +298,29 @@ export function PlatformCard({
             placeholder="No text generated yet"
             disabled={isPublished}
             className={cn(
-              "w-full bg-[#111111] text-[#F5F5F5] text-sm rounded-lg p-3 resize-none outline-none focus:ring-1 transition-colors min-h-[80px]",
+              "w-full bg-[#111111] text-[#F5F5F5] text-sm rounded-lg p-3 resize-none outline-none focus:ring-1 transition-colors min-h-[80px] leading-relaxed",
               "border border-[#2A2A2A] focus:border-[#7C3AED] focus:ring-[#7C3AED]/30",
-              isPublished && "opacity-60 cursor-not-allowed",
-              "font-mono leading-relaxed"
+              isPublished && "opacity-60 cursor-not-allowed"
             )}
             style={{ overflow: "hidden" }}
           />
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between">
+            {saveState !== "idle" ? (
+              <span
+                className={cn(
+                  "text-xs",
+                  saveState === "saving" && "text-[#888888]",
+                  saveState === "saved" && "text-emerald-400",
+                  saveState === "error" && "text-red-400"
+                )}
+              >
+                {saveState === "saving" && "Saving…"}
+                {saveState === "saved" && "Saved ✓"}
+                {saveState === "error" && "Save failed"}
+              </span>
+            ) : (
+              <span />
+            )}
             <span
               className={cn(
                 "text-xs tabular-nums",
@@ -289,6 +339,7 @@ export function PlatformCard({
           imageUrl={platformVariant.imageUrl}
           isGenerating={isImageGenerating && !platformVariant.imageUrl}
           platform={platform}
+          onRegenerate={onRegenerateImage ? () => onRegenerateImage(platform) : undefined}
         />
       </div>
 
@@ -342,6 +393,7 @@ export function PlatformCard({
           {!isPublished && text && (
             <HashtagSuggestions
               platform={platform}
+              postId={postId}
               postText={text}
               existingHashtags={hashtags}
               maxHashtags={rules.hashtagCount.max}

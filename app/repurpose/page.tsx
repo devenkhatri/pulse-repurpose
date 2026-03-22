@@ -1,9 +1,10 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback, Suspense } from "react"
-import { useSearchParams } from "next/navigation"
+import { useSearchParams, useRouter } from "next/navigation"
 import axios from "axios"
 import { toast } from "sonner"
+import { FileText, ChevronLeft, ChevronRight, Keyboard, X } from "lucide-react"
 import { TopBar } from "@/components/layout/TopBar"
 import { SourcePostPanel } from "@/components/repurpose/SourcePostPanel"
 import { PlatformCard } from "@/components/repurpose/PlatformCard"
@@ -35,15 +36,87 @@ function extractApiError(err: unknown, fallback: string): string {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function allPlatformsHaveText(post: LinkedInPost, platforms: Platform[]): boolean {
+function generationSettled(
+  post: LinkedInPost,
+  platforms: Platform[],
+  mode: "text" | "images"
+): boolean {
   return platforms.every((p) => {
-    const t = post.platforms[p]?.text
-    return t != null && t !== ""
+    const v = post.platforms[p]
+    if (!v) return false
+    if (v.status === "failed") return true
+    if (mode === "text") return v.text != null && v.text !== ""
+    return v.imageUrl != null
   })
 }
 
-function allPlatformsHaveImages(post: LinkedInPost, platforms: Platform[]): boolean {
-  return platforms.every((p) => post.platforms[p]?.imageUrl != null)
+function anyPlatformFailed(post: LinkedInPost, platforms: Platform[]): boolean {
+  return platforms.some((p) => post.platforms[p]?.status === "failed")
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard shortcuts dialog
+// ---------------------------------------------------------------------------
+
+interface KeyboardShortcutsDialogProps {
+  open: boolean
+  onClose: () => void
+}
+
+const SHORTCUTS = [
+  { keys: "⌘↵", description: "Approve the focused platform card" },
+  { keys: "⌘⇧R", description: "Re-generate text (with confirmation if edited)" },
+  { keys: "⌘S", description: "Save brand voice (Settings page)" },
+  { keys: "Esc", description: "Clear platform card focus" },
+  { keys: "?", description: "Show this keyboard shortcuts dialog" },
+]
+
+function KeyboardShortcutsDialog({ open, onClose }: KeyboardShortcutsDialogProps) {
+  if (!open) return null
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 bg-black/60 z-50"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Keyboard shortcuts"
+        className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[400px] bg-[#161616] border border-[#2A2A2A] rounded-xl shadow-2xl p-5"
+      >
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Keyboard className="w-4 h-4 text-[#7C3AED]" />
+            <h2 className="text-sm font-semibold text-[#F5F5F5]">Keyboard Shortcuts</h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-white/5 text-[#555555] hover:text-white transition-colors"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <table className="w-full text-sm">
+          <tbody className="space-y-2">
+            {SHORTCUTS.map(({ keys, description }) => (
+              <tr key={keys} className="border-b border-[#2A2A2A] last:border-0">
+                <td className="py-2 pr-4 w-20">
+                  <kbd className="inline-flex items-center px-2 py-0.5 rounded bg-[#1C1C1C] border border-[#2A2A2A] text-xs font-mono text-[#A78BFA]">
+                    {keys}
+                  </kbd>
+                </td>
+                <td className="py-2 text-[#888888] text-xs">{description}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +125,7 @@ function allPlatformsHaveImages(post: LinkedInPost, platforms: Platform[]): bool
 
 function RepurposePageInner() {
   const searchParams = useSearchParams()
+  const router = useRouter()
   const postId = searchParams.get("postId")
 
   const {
@@ -61,6 +135,7 @@ function RepurposePageInner() {
     selectedPlatforms,
     variants,
     activePlatform,
+    dirtyPlatforms,
     setActivePost,
     setGenerationStatus,
     setImageGenerationStatus,
@@ -72,6 +147,13 @@ function RepurposePageInner() {
   const [isLoading, setIsLoading] = useState(false)
   const [pollWarning, setPollWarning] = useState(false)
   const [showRegenConfirm, setShowRegenConfirm] = useState(false)
+  const [showShortcutsDialog, setShowShortcutsDialog] = useState(false)
+  const [chatCollapsed, setChatCollapsed] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("pulse.chat.collapsed") === "true"
+    }
+    return false
+  })
 
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollStartRef = useRef<number>(0)
@@ -119,15 +201,26 @@ function RepurposePageInner() {
           setActivePost(post)
           initVariantsFromPost(post)
 
-          if (mode === "text" && allPlatformsHaveText(post, selectedPlatforms)) {
+          if (mode === "text" && generationSettled(post, selectedPlatforms, "text")) {
             stopPolling()
-            setGenerationStatus("done")
-          } else if (mode === "images" && allPlatformsHaveImages(post, selectedPlatforms)) {
+            if (anyPlatformFailed(post, selectedPlatforms)) {
+              setGenerationStatus("failed")
+              toast.error("Some platforms failed to generate — check n8n logs")
+            } else {
+              setGenerationStatus("done")
+            }
+          } else if (mode === "images" && generationSettled(post, selectedPlatforms, "images")) {
             stopPolling()
-            setImageGenerationStatus("done")
+            if (anyPlatformFailed(post, selectedPlatforms)) {
+              setImageGenerationStatus("failed")
+              toast.error("Some image generations failed — check n8n logs")
+            } else {
+              setImageGenerationStatus("done")
+            }
           }
         } catch {
-          // silently continue polling
+          // Deduplicated toast for recurring poll errors
+          toast.error("Polling failed — check your network connection", { id: "poll-error" })
         }
       }, POLL_INTERVAL_MS)
     },
@@ -141,6 +234,21 @@ function RepurposePageInner() {
       setImageGenerationStatus,
     ]
   )
+
+  // ------------------------------------------------------------------
+  // Unsaved changes warning on navigation (item 2)
+  // ------------------------------------------------------------------
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (dirtyPlatforms.size > 0) {
+        e.preventDefault()
+        e.returnValue = ""
+      }
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload)
+  }, [dirtyPlatforms])
 
   // ------------------------------------------------------------------
   // Trigger handlers
@@ -182,25 +290,30 @@ function RepurposePageInner() {
     [activePost?.id, selectedPlatforms, setGenerationStatus, startPolling]
   )
 
-  const handleTriggerImages = useCallback(async () => {
+  const handleTriggerImages = useCallback(async (platformsOverride?: Platform[]) => {
     if (!activePost?.id) return
+    const platforms = platformsOverride ?? selectedPlatforms
 
     setImageGenerationStatus("generating_images")
     try {
       await axios.post("/api/trigger/images", {
         postId: activePost.id,
-        platforms: selectedPlatforms,
+        platforms,
       })
       startPolling(activePost.id, "images")
     } catch (err) {
       const msg = extractApiError(err, "Image generation could not be triggered")
       toast.error(msg, {
-        action: { label: "Retry", onClick: handleTriggerImages },
+        action: { label: "Retry", onClick: () => handleTriggerImages(platformsOverride) },
       })
       setImageGenerationStatus("idle")
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePost?.id, selectedPlatforms, setImageGenerationStatus, startPolling])
+
+  const handleRegenerateImageForPlatform = useCallback((platform: Platform) => {
+    void handleTriggerImages([platform])
+  }, [handleTriggerImages])
 
   // ------------------------------------------------------------------
   // Approve all
@@ -283,15 +396,27 @@ function RepurposePageInner() {
       const isMac = navigator.platform.toUpperCase().includes("MAC")
       const metaKey = isMac ? e.metaKey : e.ctrlKey
 
-      // Escape — clear active platform focus
-      if (e.key === "Escape") {
-        setActivePlatform(null)
+      // ? — open keyboard shortcuts dialog (when not typing)
+      const tag = (e.target as HTMLElement).tagName.toLowerCase()
+      const isTyping = tag === "input" || tag === "textarea" || tag === "select"
+
+      if (e.key === "?" && !isTyping) {
+        setShowShortcutsDialog((prev) => !prev)
         return
       }
 
-      // Don't fire when user is typing in an input / textarea
-      const tag = (e.target as HTMLElement).tagName.toLowerCase()
-      if (tag === "input" || tag === "textarea" || tag === "select") return
+      // Escape — close shortcuts dialog or clear active platform focus
+      if (e.key === "Escape") {
+        if (showShortcutsDialog) {
+          setShowShortcutsDialog(false)
+        } else {
+          setActivePlatform(null)
+        }
+        return
+      }
+
+      // Don't fire shortcuts when user is typing in an input / textarea
+      if (isTyping) return
 
       // Cmd+Enter — approve the focused (active) platform card
       if (metaKey && e.key === "Enter") {
@@ -299,7 +424,6 @@ function RepurposePageInner() {
         if (activePlatform && activePost) {
           const variant = activePost.platforms[activePlatform]
           if (variant?.text && variant.status !== "published" && variant.status !== "scheduled") {
-            // Trigger approve for the focused card — same logic as handleApprove in PlatformCard
             axios
               .patch(`/api/posts/${activePost.id}`, {
                 platform: activePlatform,
@@ -312,8 +436,8 @@ function RepurposePageInner() {
         return
       }
 
-      // Cmd+R — re-generate (with confirmation if any edited variant exists)
-      if (metaKey && e.key.toLowerCase() === "r") {
+      // Cmd+Shift+R — re-generate (with confirmation if any edited variant exists)
+      if (metaKey && e.shiftKey && e.key.toLowerCase() === "r") {
         e.preventDefault()
         if (!activePost || generationStatus === "generating_text") return
         const hasEdits = selectedPlatforms.some((p) => activePost.platforms[p]?.isEdited)
@@ -332,10 +456,23 @@ function RepurposePageInner() {
     activePost,
     generationStatus,
     selectedPlatforms,
+    showShortcutsDialog,
     setActivePlatform,
     handleRefresh,
     handleTriggerRepurpose,
   ])
+
+  // ------------------------------------------------------------------
+  // Chat collapse toggle with localStorage persistence
+  // ------------------------------------------------------------------
+
+  function toggleChatCollapsed() {
+    setChatCollapsed((prev) => {
+      const next = !prev
+      try { localStorage.setItem("pulse.chat.collapsed", String(next)) } catch {}
+      return next
+    })
+  }
 
   // ------------------------------------------------------------------
   // Derived state
@@ -353,7 +490,7 @@ function RepurposePageInner() {
     })
 
   // ------------------------------------------------------------------
-  // No postId state
+  // No postId state — structured empty state (item 13)
   // ------------------------------------------------------------------
 
   if (!postId) {
@@ -361,9 +498,21 @@ function RepurposePageInner() {
       <div className="flex flex-col h-full">
         <TopBar title="Repurpose" />
         <div className="flex-1 flex items-center justify-center">
-          <p className="text-[#888888]">
-            Select a post from the Dashboard to repurpose it.
-          </p>
+          <div className="text-center space-y-4 max-w-xs">
+            <FileText className="w-12 h-12 text-[#333333] mx-auto" />
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium text-[#888888]">No post selected</h3>
+              <p className="text-xs text-[#555555] leading-relaxed">
+                Select a post from the Dashboard to repurpose it across platforms.
+              </p>
+            </div>
+            <button
+              onClick={() => router.push("/dashboard")}
+              className="px-4 py-2 text-sm bg-[#7C3AED] hover:bg-[#6D28D9] text-white rounded-lg transition-colors"
+            >
+              Go to Dashboard
+            </button>
+          </div>
         </div>
       </div>
     )
@@ -375,6 +524,10 @@ function RepurposePageInner() {
 
   return (
     <>
+    <KeyboardShortcutsDialog
+      open={showShortcutsDialog}
+      onClose={() => setShowShortcutsDialog(false)}
+    />
     <ConfirmDialog
       open={showRegenConfirm}
       title="Re-generate content?"
@@ -390,14 +543,25 @@ function RepurposePageInner() {
       <TopBar
         title="Repurpose"
         actions={
-          hasTextVariants ? (
+          <div className="flex items-center gap-2">
             <button
-              onClick={handleApproveAll}
-              className="px-3 py-1.5 text-sm bg-[#7C3AED] hover:bg-[#6D28D9] text-white rounded-lg transition-colors"
+              onClick={() => setShowShortcutsDialog(true)}
+              className="p-1.5 rounded hover:bg-white/5 text-zinc-500 hover:text-zinc-300 transition-colors"
+              title="Keyboard shortcuts (?)"
+              aria-label="Show keyboard shortcuts"
             >
-              Approve all
+              <Keyboard className="w-4 h-4" />
             </button>
-          ) : undefined
+            {hasTextVariants && (
+              <button
+                onClick={handleApproveAll}
+                className="px-3 py-1.5 text-sm bg-[#7C3AED] hover:bg-[#6D28D9] text-white rounded-lg transition-colors"
+                title="Approve all platforms (⌘↵)"
+              >
+                Approve all
+              </button>
+            )}
+          </div>
         }
       />
 
@@ -418,7 +582,7 @@ function RepurposePageInner() {
               selectedPlatforms={selectedPlatforms}
               hasTextVariants={hasTextVariants}
               onTriggerRepurpose={handleTriggerRepurpose}
-              onTriggerImages={handleTriggerImages}
+              onTriggerImages={() => handleTriggerImages()}
               onAbortText={handleAbortText}
               onAbortImages={handleAbortImages}
             />
@@ -451,6 +615,8 @@ function RepurposePageInner() {
             <GenerationStatusPanel
               generationStatus={generationStatus}
               imageGenerationStatus={imageGenerationStatus}
+              selectedPlatforms={selectedPlatforms}
+              activePost={activePost}
             />
           )}
 
@@ -468,6 +634,7 @@ function RepurposePageInner() {
                 isActive={activePlatform === platform}
                 onFocus={setActivePlatform}
                 onRefresh={handleRefresh}
+                onRegenerateImage={handleRegenerateImageForPlatform}
               />
             ))}
 
@@ -479,21 +646,55 @@ function RepurposePageInner() {
         </div>
 
         {/* ── Column 3 — AI chat sidebar ── */}
-        <div className="w-[280px] flex-shrink-0 border-l border-[#2A2A2A] flex flex-col">
-          <div className="p-4 border-b border-[#2A2A2A]">
-            <h3 className="text-sm font-medium text-[#F5F5F5]">AI Assistant</h3>
-            <p className="text-xs text-[#555555] mt-0.5">
-              {activePlatform
-                ? `Editing ${activePlatform}`
-                : "Click a card to focus"}
-            </p>
-          </div>
-          {postId && (
-            <AIChatSidebar
-              postId={postId}
-              activePlatform={activePlatform}
-              hasTextVariants={hasTextVariants}
-            />
+        <div
+          className={`flex-shrink-0 border-l border-[#2A2A2A] flex flex-col transition-all duration-200 ${
+            chatCollapsed ? "w-10" : "w-[280px]"
+          }`}
+        >
+          {chatCollapsed ? (
+            /* Collapsed strip — toggle button only */
+            <button
+              onClick={toggleChatCollapsed}
+              className="flex-1 flex flex-col items-center justify-start pt-4 gap-2 text-[#555555] hover:text-[#888888] transition-colors"
+              title="Expand AI Assistant"
+              aria-label="Expand AI Assistant"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span
+                className="text-[10px] uppercase tracking-widest"
+                style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
+              >
+                AI
+              </span>
+            </button>
+          ) : (
+            <>
+              <div className="p-4 border-b border-[#2A2A2A] flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-medium text-[#F5F5F5]">AI Assistant</h3>
+                  <p className="text-xs text-[#555555] mt-0.5">
+                    {activePlatform
+                      ? `Editing ${activePlatform}`
+                      : "Select a card to focus"}
+                  </p>
+                </div>
+                <button
+                  onClick={toggleChatCollapsed}
+                  className="p-1 rounded hover:bg-white/5 text-[#555555] hover:text-[#888888] transition-colors"
+                  title="Collapse AI Assistant"
+                  aria-label="Collapse AI Assistant"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+              {postId && (
+                <AIChatSidebar
+                  postId={postId}
+                  activePlatform={activePlatform}
+                  hasTextVariants={hasTextVariants}
+                />
+              )}
+            </>
           )}
         </div>
       </div>

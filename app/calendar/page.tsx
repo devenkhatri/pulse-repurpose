@@ -218,6 +218,7 @@ export default function CalendarPage() {
             <CalendarView
               events={calendarEvents}
               onEventClick={handleEventClick}
+              onReschedule={handleReschedule}
             />
 
             {gapWarnings.length > 0 && (

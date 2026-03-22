@@ -13,9 +13,11 @@ const PLATFORMS: Platform[] = ["twitter", "threads", "instagram", "facebook", "s
 interface PostRowProps {
   post: LinkedInPost
   onClick: () => void
+  isSelected?: boolean
+  onSelectChange?: (id: string, checked: boolean) => void
 }
 
-export function PostRow({ post, onClick }: PostRowProps) {
+export function PostRow({ post, onClick, isSelected, onSelectChange }: PostRowProps) {
   const router = useRouter()
 
   return (
@@ -23,6 +25,21 @@ export function PostRow({ post, onClick }: PostRowProps) {
       className="border-b border-white/5 hover:bg-white/[0.02] cursor-pointer transition-colors"
       onClick={onClick}
     >
+      {/* Select checkbox */}
+      <td className="px-4 py-3 w-8">
+        <input
+          type="checkbox"
+          checked={isSelected ?? false}
+          onChange={(e) => {
+            e.stopPropagation()
+            onSelectChange?.(post.id, e.target.checked)
+          }}
+          onClick={(e) => e.stopPropagation()}
+          className="w-4 h-4 accent-[#7C3AED]"
+          aria-label={`Select post from ${post.postedAt ? format(new Date(post.postedAt), "MMM d") : "unknown date"}`}
+        />
+      </td>
+
       {/* Date */}
       <td className="px-4 py-3 text-sm text-zinc-400 whitespace-nowrap">
         {post.postedAt ? format(new Date(post.postedAt), "MMM d") : "—"}

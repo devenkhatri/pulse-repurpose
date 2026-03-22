@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect, useRef } from "react"
 import { PostRow } from "@/components/dashboard/PostRow"
 import { PostSlideOver } from "@/components/dashboard/PostSlideOver"
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner"
@@ -43,29 +43,67 @@ const STATUS_PRIORITY: Record<PostStatus, number> = {
   failed: 4,
 }
 
+function loadSortFromStorage(): SortState {
+  if (typeof window === "undefined") return { column: "date", direction: "desc" }
+  try {
+    const saved = localStorage.getItem("pulse.dashboard.sort")
+    if (saved) return JSON.parse(saved) as SortState
+  } catch {}
+  return { column: "date", direction: "desc" }
+}
+
 interface PostsTableProps {
   posts: LinkedInPost[]
   loading: boolean
   error: string | null
   onApprove: (postId: string, platform: Platform) => Promise<void>
   onReject: (postId: string, platform: Platform) => Promise<void>
+  // Controlled filter state (lifted to DashboardPage for StatsBar integration)
+  statusFilter: string
+  onStatusFilterChange: (v: string) => void
+  dateFrom: string
+  onDateFromChange: (v: string) => void
+  dateTo: string
+  onDateToChange: (v: string) => void
 }
 
-export function PostsTable({ posts, loading, error, onApprove, onReject }: PostsTableProps) {
+export function PostsTable({
+  posts,
+  loading,
+  error,
+  onApprove,
+  onReject,
+  statusFilter,
+  onStatusFilterChange,
+  dateFrom,
+  onDateFromChange,
+  dateTo,
+  onDateToChange,
+}: PostsTableProps) {
   const [platformFilter, setPlatformFilter] = useState<string>("all")
-  const [statusFilter, setStatusFilter] = useState<string>("all")
-  const [dateFrom, setDateFrom] = useState("")
-  const [dateTo, setDateTo] = useState("")
   const [selectedPost, setSelectedPost] = useState<LinkedInPost | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
-  const [sort, setSort] = useState<SortState>({ column: "date", direction: "desc" })
+  const [sort, setSort] = useState<SortState>(loadSortFromStorage)
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
+
+  // Sync selectedRows when posts change (remove stale ids)
+  useEffect(() => {
+    setSelectedRows((prev) => {
+      const validIds = new Set(posts.map((p) => p.id))
+      const next = new Set(Array.from(prev).filter((id) => validIds.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [posts])
 
   function handleSort(column: SortColumn) {
-    setSort((prev) =>
-      prev.column === column
-        ? { column, direction: prev.direction === "desc" ? "asc" : "desc" }
-        : { column, direction: "desc" }
-    )
+    setSort((prev) => {
+      const next =
+        prev.column === column
+          ? { column, direction: (prev.direction === "desc" ? "asc" : "desc") as SortDirection }
+          : { column, direction: "desc" as SortDirection }
+      try { localStorage.setItem("pulse.dashboard.sort", JSON.stringify(next)) } catch {}
+      return next
+    })
   }
 
   const filteredPosts = useMemo(() => {
@@ -78,7 +116,7 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
       } else if (statusFilter !== "all") {
         // When no platform filter, show post if any platform has this status
         const hasStatus = TABLE_PLATFORMS.some(
-          (p) => post.platforms[p].status === statusFilter
+          (p) => post.platforms[p]?.status === statusFilter
         )
         if (!hasStatus) return false
       }
@@ -127,6 +165,39 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
       return sort.direction === "asc" ? cmp : -cmp
     })
   }, [posts, platformFilter, statusFilter, dateFrom, dateTo, searchQuery, sort])
+
+  // Select-all state
+  const allSelected =
+    filteredPosts.length > 0 && filteredPosts.every((p) => selectedRows.has(p.id))
+  const someSelected =
+    filteredPosts.some((p) => selectedRows.has(p.id)) && !allSelected
+
+  const selectAllRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someSelected
+    }
+  }, [someSelected])
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelectedRows(new Set())
+    } else {
+      setSelectedRows(new Set(filteredPosts.map((p) => p.id)))
+    }
+  }
+
+  function toggleSelectRow(id: string, checked: boolean) {
+    setSelectedRows((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
+  const anyFilterActive =
+    platformFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo || searchQuery
 
   if (loading) {
     return (
@@ -177,9 +248,9 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
           ))}
         </div>
 
-        <div className="flex items-center gap-2 ml-auto">
+        <div className="flex items-center gap-2 ml-auto flex-wrap">
           {/* Status filter */}
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <Select value={statusFilter} onValueChange={onStatusFilterChange}>
             <SelectTrigger className="w-36 h-8 text-xs bg-[#161616] border-white/10">
               <SelectValue />
             </SelectTrigger>
@@ -193,32 +264,40 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
           </Select>
 
           {/* Date range */}
-          <Input
-            type="date"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            className="w-36 h-8 text-xs bg-[#161616] border-white/10"
-            placeholder="From"
-          />
+          <div className="flex items-center gap-1">
+            <label htmlFor="date-from" className="text-xs text-zinc-500">From</label>
+            <Input
+              id="date-from"
+              type="date"
+              value={dateFrom}
+              onChange={(e) => onDateFromChange(e.target.value)}
+              className="w-36 h-8 text-xs bg-[#161616] border-white/10"
+              aria-label="Date from"
+            />
+          </div>
           <span className="text-zinc-600 text-xs">—</span>
-          <Input
-            type="date"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            className="w-36 h-8 text-xs bg-[#161616] border-white/10"
-            placeholder="To"
-          />
+          <div className="flex items-center gap-1">
+            <label htmlFor="date-to" className="text-xs text-zinc-500">To</label>
+            <Input
+              id="date-to"
+              type="date"
+              value={dateTo}
+              onChange={(e) => onDateToChange(e.target.value)}
+              className="w-36 h-8 text-xs bg-[#161616] border-white/10"
+              aria-label="Date to"
+            />
+          </div>
 
-          {(platformFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo || searchQuery) && (
+          {anyFilterActive && (
             <Button
               size="sm"
               variant="ghost"
               className="h-8 text-xs text-zinc-500 hover:text-white"
               onClick={() => {
                 setPlatformFilter("all")
-                setStatusFilter("all")
-                setDateFrom("")
-                setDateTo("")
+                onStatusFilterChange("all")
+                onDateFromChange("")
+                onDateToChange("")
                 setSearchQuery("")
               }}
             >
@@ -228,13 +307,31 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
         </div>
       </div>
 
+      {/* Results count */}
+      {anyFilterActive && (
+        <p className="text-xs text-zinc-500 mb-3">
+          Showing {filteredPosts.length} of {posts.length} post{posts.length !== 1 ? "s" : ""}
+        </p>
+      )}
+
       {/* Table */}
       <div className="rounded-lg border border-white/10 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
               <tr className="border-b border-white/10 bg-white/[0.02]">
+                <th scope="col" className="px-4 py-3 w-8">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleSelectAll}
+                    className="w-4 h-4 accent-[#7C3AED]"
+                    aria-label="Select all posts"
+                  />
+                </th>
                 <th
+                  scope="col"
                   className="px-4 py-3 text-xs font-medium text-zinc-500 whitespace-nowrap cursor-pointer select-none hover:text-zinc-300 transition-colors"
                   onClick={() => handleSort("date")}
                 >
@@ -244,6 +341,7 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
                   </span>
                 </th>
                 <th
+                  scope="col"
                   className="px-4 py-3 text-xs font-medium text-zinc-500 cursor-pointer select-none hover:text-zinc-300 transition-colors"
                   onClick={() => handleSort("linkedinText")}
                 >
@@ -255,6 +353,7 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
                 {TABLE_PLATFORMS.map((p) => (
                   <th
                     key={p}
+                    scope="col"
                     className="px-4 py-3 text-xs font-medium text-zinc-500 capitalize whitespace-nowrap cursor-pointer select-none hover:text-zinc-300 transition-colors"
                     onClick={() => handleSort(p)}
                   >
@@ -264,14 +363,14 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
                     </span>
                   </th>
                 ))}
-                <th className="px-4 py-3 text-xs font-medium text-zinc-500">Actions</th>
+                <th scope="col" className="px-4 py-3 text-xs font-medium text-zinc-500">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filteredPosts.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={TABLE_PLATFORMS.length + 3}
+                    colSpan={TABLE_PLATFORMS.length + 4}
                     className="px-4 py-12 text-center text-sm text-zinc-600"
                   >
                     {posts.length === 0
@@ -287,6 +386,8 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
                     key={post.id}
                     post={post}
                     onClick={() => setSelectedPost(post)}
+                    isSelected={selectedRows.has(post.id)}
+                    onSelectChange={toggleSelectRow}
                   />
                 ))
               )}

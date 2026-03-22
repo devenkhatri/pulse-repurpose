@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
-import { getPostById, invalidatePostCache } from "@/lib/n8n-sheet"
+import { getPostById, invalidatePostCache, updateMultiplePlatforms } from "@/lib/n8n-sheet"
 import { writePlatformFile } from "@/lib/content-store"
 import type { Platform } from "@/types"
 
@@ -49,8 +49,12 @@ export async function POST(req: NextRequest) {
     const { postId, status, error } = parseResult.data
 
     if (status === "failed") {
-      // Log failure; UI polling will detect the failed status from Sheet
       console.error(`[callback/repurpose] Generation failed for ${postId}:`, error)
+      // Mark all platforms as failed in Sheet so the UI stops polling
+      const failedVariants = Object.fromEntries(
+        PLATFORMS.map((p) => [p, { status: "failed" as const, error: error ?? "n8n generation failed" }])
+      ) as Partial<Record<Platform, { status: "failed"; error: string }>>
+      await updateMultiplePlatforms(postId, failedVariants).catch(() => {})
       return NextResponse.json({ received: true })
     }
 

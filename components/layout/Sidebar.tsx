@@ -2,13 +2,14 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LayoutDashboard, RefreshCw, Calendar, Settings, Zap } from "lucide-react"
+import { LayoutDashboard, RefreshCw, Calendar, Settings, Zap, BarChart2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/repurpose", label: "Repurpose", icon: RefreshCw },
   { href: "/calendar", label: "Calendar", icon: Calendar },
+  { href: "/analytics", label: "Analytics", icon: BarChart2 },
   { href: "/settings", label: "Settings", icon: Settings },
 ]
 
@@ -50,7 +51,9 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="px-5 py-4 border-t border-white/5">
-        <p className="text-xs text-white/20">localhost:3000</p>
+        <p className="text-xs text-white/20">
+          {process.env.NEXT_PUBLIC_APP_VERSION ? `v${process.env.NEXT_PUBLIC_APP_VERSION}` : "Pulse Repurpose"}
+        </p>
       </div>
     </aside>
   )

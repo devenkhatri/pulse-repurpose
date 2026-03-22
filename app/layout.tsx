@@ -20,10 +20,16 @@ export default function RootLayout({
   return (
     <html lang="en" className={`dark ${GeistSans.variable} ${GeistMono.variable}`}>
       <body className="bg-[#0A0A0A] text-white antialiased">
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:px-4 focus:py-2 focus:bg-[#7C3AED] focus:text-white focus:rounded-lg focus:text-sm focus:shadow-lg"
+        >
+          Skip to content
+        </a>
         <FirstRunGuard />
         <div className="flex h-screen overflow-hidden">
           <Sidebar />
-          <main className="flex-1 overflow-y-auto flex flex-col">
+          <main id="main-content" className="flex-1 overflow-y-auto flex flex-col">
             <WebhookBanner />
             {children}
           </main>
