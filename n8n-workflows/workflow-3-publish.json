@@ -16,7 +16,7 @@
     },
     {
       "parameters": {
-        "content": "## ⚙️ Setup — Credentials\n\n**1. Twitter / X**\nCreate `OAuth1 API` credential with your Twitter App keys (v1.1 endpoint for media upload + v2 for tweets).\nUpdate `YOUR_TWITTER_CREDENTIAL_ID` in:\n- `HTTP - Twitter Upload Media`\n- `HTTP - Twitter Post (With Media)`\n- `HTTP - Twitter Post (Text Only)`\n- `HTTP - Twitter First Comment`\n\n**2. Meta (Threads · Instagram · Facebook)**\nCreate `Header Auth` credential:\n- Name: `Authorization`\n- Value: `Bearer YOUR_LONG_LIVED_ACCESS_TOKEN`\n\nUpdate `YOUR_META_CREDENTIAL_ID` in all Threads / Instagram / Facebook HTTP nodes.\n\n**3. Skool** *(placeholder — no public API)*\nCreate `Header Auth` with your session cookie:\n- Name: `Cookie`\n- Value: `session=YOUR_COOKIE_VALUE`\nUpdate `YOUR_SKOOL_CREDENTIAL_ID` in `HTTP - Skool Post` and `HTTP - Skool First Comment`.\n\n**4. Google Sheets**\nReplace `YOUR_SPREADSHEET_ID` and select your Google OAuth2 credential in both GSheets nodes.\n\n**5. n8n Variables** *(Admin → Variables)*\nSet these instance-level variables:\n- `THREADS_USER_ID` — your Threads/Meta user ID\n- `INSTAGRAM_USER_ID` — your IG user ID\n- `FACEBOOK_PAGE_ID` — your FB Page ID\n- `SKOOL_COMMUNITY_ID` — your Skool community ID",
+        "content": "## ⚙️ Setup — Credentials\n\n**1. Twitter / X**\nCreate `OAuth1 API` credential with your Twitter App keys (v1.1 endpoint for media upload + v2 for tweets).\nUpdate `YOUR_TWITTER_CREDENTIAL_ID` in:\n- `HTTP - Twitter Upload Media`\n- `HTTP - Twitter Post (With Media)`\n- `HTTP - Twitter Post (Text Only)`\n- `HTTP - Twitter First Comment`\n\n**2. Meta (Threads · Instagram · Facebook)**\nCreate `Header Auth` credential:\n- Name: `Authorization`\n- Value: `Bearer YOUR_LONG_LIVED_ACCESS_TOKEN`\n\nUpdate `YOUR_META_CREDENTIAL_ID` in all Threads / Instagram / Facebook HTTP nodes.\n\n**3. Skool** *(placeholder — no public API)*\nCreate `Header Auth` with your session cookie:\n- Name: `Cookie`\n- Value: `session=YOUR_COOKIE_VALUE`\nUpdate `YOUR_SKOOL_CREDENTIAL_ID` in `HTTP - Skool Post` and `HTTP - Skool First Comment`.\n\n**4. Google Sheets**\nReplace `YOUR_SPREADSHEET_ID` and select your Google OAuth2 credential in both GSheets nodes.\n\n**5. n8n Variables** *(Admin → Variables)*\nSet these instance-level variables:\n- `N8N_BASE_URL` — your n8n instance URL, e.g. `http://localhost:5678`\n- `THREADS_USER_ID` — your Threads/Meta user ID\n- `INSTAGRAM_USER_ID` — your IG user ID\n- `FACEBOOK_PAGE_ID` — your FB Page ID\n- `SKOOL_COMMUNITY_ID` — your Skool community ID\n\nWorkflows 1, 2, and 3 call **Workflow 0 (Sheet Operations)** for all Google Sheets writes — no direct GSheets credential needed in those workflows.",
         "height": 660,
         "width": 400,
         "color": 3
@@ -94,7 +94,7 @@
     },
     {
       "parameters": {
-        "content": "## 🔀 After Publish — Status Update\n\nAll 5 platform branches merge here. Since only one platform fires per execution, the Merge node (Append mode) immediately forwards the single result.\n\n**Code - Build Sheet Update Row** constructs:\n```\n{ post_id, {platform}_status, {platform}_published_at, {platform}_platform_post_id }\n```\n\n**GSheets - Update Publish Status** writes these columns using `post_id` as the match key.\n\n**Code - Restore Context** passes the original publish result (not the GSheets response) forward so downstream nodes have `postId`, `platform`, `callbackUrl`, `firstComment`.",
+        "content": "## 🔀 After Publish — Status Update\n\nAll 5 platform branches merge here. Since only one platform fires per execution, the Merge node (Append mode) immediately forwards the single result.\n\n**Code - Build Sheet Update Row** retains the publish result on `$json` (postId, platform, status, publishedAt, platformPostId).\n\n**HTTP - Sheet Ops Update Publish Status** calls Workflow 0 (`pulse-sheet-ops`) with action `UPDATE_PLATFORM_VARIANT` — `variant: { status, publishedAt, platformPostId }`. Workflow 0 handles all column mapping centrally.\n\n**Code - Restore Context** passes the original publish result forward so downstream nodes have `postId`, `platform`, `callbackUrl`, `firstComment`.",
         "height": 260,
         "width": 780,
         "color": 4
@@ -147,7 +147,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Validate and normalise publish payload\nconst input = $input.first().json;\nconst required = ['platform', 'text', 'postId', 'sheetRowId', 'callbackUrl'];\nfor (const field of required) {\n  if (!input[field]) {\n    throw new Error(`Missing required field: ${field}`);\n  }\n}\n\nconst PLATFORMS = ['twitter', 'threads', 'instagram', 'facebook', 'skool'];\nif (!PLATFORMS.includes(input.platform)) {\n  throw new Error(`Invalid platform: ${input.platform}. Must be one of: ${PLATFORMS.join(', ')}`);\n}\n\n// Build full post text including hashtags\nconst hashtags = Array.isArray(input.hashtags) ? input.hashtags : [];\nconst hashtagStr = hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ');\nconst fullText = hashtags.length > 0 ? `${input.text}\\n\\n${hashtagStr}` : input.text;\n\nreturn [{\n  json: {\n    platform: input.platform,\n    text: input.text,\n    fullText,\n    hashtags,\n    imageUrl: input.imageUrl || null,\n    scheduledAt: input.scheduledAt || null,\n    sheetRowId: String(input.sheetRowId),\n    postId: String(input.postId),\n    callbackUrl: input.callbackUrl,\n    firstComment: input.firstComment || null\n  }\n}];\n"
+        "jsCode": "// Validate and normalise publish payload\nconst _raw = $input.first().json;\nconst input = _raw.body ?? _raw;\nconst required = ['platform', 'text', 'postId', 'sheetRowId', 'callbackUrl'];\nfor (const field of required) {\n  if (!input[field]) {\n    throw new Error(`Missing required field: ${field}`);\n  }\n}\n\nconst PLATFORMS = ['twitter', 'threads', 'instagram', 'facebook', 'skool'];\nif (!PLATFORMS.includes(input.platform)) {\n  throw new Error(`Invalid platform: ${input.platform}. Must be one of: ${PLATFORMS.join(', ')}`);\n}\n\n// Build full post text including hashtags\nconst hashtags = Array.isArray(input.hashtags) ? input.hashtags : [];\nconst hashtagStr = hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ');\nconst fullText = hashtags.length > 0 ? `${input.text}\\n\\n${hashtagStr}` : input.text;\n\nreturn [{\n  json: {\n    platform: input.platform,\n    text: input.text,\n    fullText,\n    hashtags,\n    imageUrl: input.imageUrl || null,\n    scheduledAt: input.scheduledAt || null,\n    sheetRowId: String(input.sheetRowId),\n    postId: String(input.postId),\n    callbackUrl: input.callbackUrl,\n    firstComment: input.firstComment || null\n  }\n}];\n"
       },
       "id": "wf3-n02-validate",
       "name": "Code - Validate Input",
@@ -655,7 +655,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Build Google Sheets update row for published status\nconst d = $json;\nconst p = d.platform;\nconst row = {\n  post_id: d.postId\n};\n\nrow[`${p}_status`] = d.status;\nif (d.publishedAt) row[`${p}_published_at`] = d.publishedAt;\nif (d.platformPostId) row[`${p}_platform_post_id`] = d.platformPostId;\n\nreturn [{ json: { ...d, _sheetRow: row } }];\n"
+        "jsCode": "// Build Google Sheets update row for published status\nconst d = $json;\nconst p = d.platform;\nconst row = {\n  post_id: d.postId\n};\n\nrow[`${p}_status`] = d.status;\nif (d.publishedAt) row[`${p}_published_at`] = d.publishedAt;\nif (d.platformPostId) row[`${p}_platform_post_id`] = d.platformPostId;\n\nreturn [{ json: {\n  ...d,\n  _sheetRow: row,\n  action: 'UPDATE_PLATFORM_VARIANT',\n  payload: { postId: d.postId, platform: d.platform, variant: { status: d.status, publishedAt: d.publishedAt || null, platformPostId: d.platformPostId || null } }\n} }];\n"
       },
       "id": "wf3-n27-build-sheet-row",
       "name": "Code - Build Sheet Update Row",
@@ -665,41 +665,17 @@
     },
     {
       "parameters": {
-        "operation": "update",
-        "documentId": {
-          "__rl": true,
-          "value": "YOUR_SPREADSHEET_ID",
-          "mode": "id"
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": "Sheet1",
-          "mode": "name"
-        },
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": ["post_id"],
-          "schema": []
-        },
-        "options": {}
+        "workflowId": "WORKFLOW_0_ID"
       },
-      "id": "wf3-n28-gsheets-update-status",
-      "name": "GSheets - Update Publish Status",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.4,
-      "position": [2840, 400],
-      "credentials": {
-        "googleSheetsOAuth2Api": {
-          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
-          "name": "Google Sheets account"
-        }
-      },
-      "onError": "continueRegularOutput"
+      "id": "wf3-n28-exec-sheet-ops-status",
+      "name": "Execute Workflow - Sheet Ops (Publish)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [2840, 400]
     },
     {
       "parameters": {
-        "jsCode": "// Pass through original publish result (not sheet row) for callback\nconst all = $input.all();\nreturn all.map(item => ({\n  json: {\n    postId: item.json.postId,\n    platform: item.json.platform,\n    platformPostId: item.json.platformPostId,\n    publishedAt: item.json.publishedAt,\n    status: item.json.status,\n    callbackUrl: item.json.callbackUrl,\n    firstComment: item.json.firstComment,\n    fullText: item.json.fullText\n  }\n}));\n"
+        "jsCode": "// Restore original publish context from Code - Build Sheet Update Row\n// ($input is the sub-workflow output, not the original publish data)\nconst all = $('Code - Build Sheet Update Row').all();\nreturn all.map(item => ({\n  json: {\n    postId: item.json.postId,\n    platform: item.json.platform,\n    platformPostId: item.json.platformPostId,\n    publishedAt: item.json.publishedAt,\n    status: item.json.status,\n    callbackUrl: item.json.callbackUrl,\n    firstComment: item.json.firstComment,\n    fullText: item.json.fullText\n  }\n}));\n"
       },
       "id": "wf3-n28b-restore-ctx",
       "name": "Code - Restore Context",
@@ -976,7 +952,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Build sheet row for first comment status update\nconst d = $input.first().json;\nconst platform = d.platform || $('Switch - First Comment Platform').item.json.platform;\nconst status = d.id || d.data?.id ? 'published' : 'failed';\n\nreturn [{\n  json: {\n    postId: $('Code - Restore Context').first().json.postId,\n    platform,\n    firstCommentStatus: status,\n    callbackUrl: $('Code - Restore Context').first().json.callbackUrl,\n    publishResult: $('Code - Restore Context').first().json\n  }\n}];\n"
+        "jsCode": "// Build sheet row for first comment status update\nconst d = $input.first().json;\nconst platform = d.platform || $('Switch - First Comment Platform').item.json.platform;\nconst status = d.id || d.data?.id ? 'published' : 'failed';\n\nconst postId = $('Code - Restore Context').first().json.postId;\nconst callbackUrl = $('Code - Restore Context').first().json.callbackUrl;\nreturn [{\n  json: {\n    postId,\n    platform,\n    firstCommentStatus: status,\n    callbackUrl,\n    publishResult: $('Code - Restore Context').first().json,\n    action: 'UPDATE_PLATFORM_VARIANT',\n    payload: { postId, platform, variant: { firstCommentStatus: status } }\n  }\n}];\n"
       },
       "id": "wf3-n38-fc-build-row",
       "name": "Code - Build FC Status Row",
@@ -986,44 +962,13 @@
     },
     {
       "parameters": {
-        "operation": "update",
-        "documentId": {
-          "__rl": true,
-          "value": "YOUR_SPREADSHEET_ID",
-          "mode": "id"
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": "Sheet1",
-          "mode": "name"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "post_id": "={{ $json.postId }}",
-            "twitter_first_comment_status": "={{ $json.platform === 'twitter' ? $json.firstCommentStatus : undefined }}",
-            "threads_first_comment_status": "={{ $json.platform === 'threads' ? $json.firstCommentStatus : undefined }}",
-            "instagram_first_comment_status": "={{ $json.platform === 'instagram' ? $json.firstCommentStatus : undefined }}",
-            "facebook_first_comment_status": "={{ $json.platform === 'facebook' ? $json.firstCommentStatus : undefined }}",
-            "skool_first_comment_status": "={{ $json.platform === 'skool' ? $json.firstCommentStatus : undefined }}"
-          },
-          "matchingColumns": ["post_id"],
-          "schema": []
-        },
-        "options": {}
+        "workflowId": "WORKFLOW_0_ID"
       },
-      "id": "wf3-n39-fc-gsheets-update",
-      "name": "GSheets - Update First Comment Status",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.4,
-      "position": [4780, 260],
-      "credentials": {
-        "googleSheetsOAuth2Api": {
-          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
-          "name": "Google Sheets account"
-        }
-      },
-      "onError": "continueRegularOutput"
+      "id": "wf3-n39-exec-sheet-ops-fc",
+      "name": "Execute Workflow - Sheet Ops (FC)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [4780, 260]
     },
 
     {
@@ -1203,10 +1148,10 @@
     },
     "Code - Build Sheet Update Row": {
       "main": [
-        [{ "node": "GSheets - Update Publish Status", "type": "main", "index": 0 }]
+        [{ "node": "Execute Workflow - Sheet Ops (Publish)", "type": "main", "index": 0 }]
       ]
     },
-    "GSheets - Update Publish Status": {
+    "Execute Workflow - Sheet Ops (Publish)": {
       "main": [
         [{ "node": "Code - Restore Context", "type": "main", "index": 0 }]
       ]
@@ -1273,10 +1218,10 @@
     },
     "Code - Build FC Status Row": {
       "main": [
-        [{ "node": "GSheets - Update First Comment Status", "type": "main", "index": 0 }]
+        [{ "node": "Execute Workflow - Sheet Ops (FC)", "type": "main", "index": 0 }]
       ]
     },
-    "GSheets - Update First Comment Status": {
+    "Execute Workflow - Sheet Ops (FC)": {
       "main": [
         [{ "node": "Merge - Before Callback", "type": "main", "index": 0 }]
       ]

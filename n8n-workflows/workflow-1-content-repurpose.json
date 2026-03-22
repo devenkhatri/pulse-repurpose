@@ -16,7 +16,7 @@
     },
     {
       "parameters": {
-        "content": "## ⚙️ Setup — Do This First\n\n**Step 1 — OpenRouter credential**\nCreate a **Header Auth** credential:\n- Name: `Authorization`\n- Value: `Bearer YOUR_OPENROUTER_API_KEY`\n\nOpen `HTTP - OpenRouter AI` node → Credential → select it.\n\n**Step 2 — Change model (optional)**\nIn the `HTTP - OpenRouter AI` node body, `\"model\"` defaults to `openrouter/auto`.\nReplace with a specific model e.g.:\n- `anthropic/claude-3-5-sonnet`\n- `openai/gpt-4o`\n- `meta-llama/llama-3.1-70b-instruct`\n\n**Step 3 — Google Sheets**\nIn `GSheets - Write Generated Text`:\n- Replace `YOUR_SPREADSHEET_ID`\n- Set correct sheet tab name\n- Select your Google OAuth2 credential\n\n**Step 4 — Activate**\nToggle ON after setup.",
+        "content": "## ⚙️ Setup — Do This First\n\n**Step 1 — OpenRouter credential**\nCreate a **Header Auth** credential:\n- Name: `Authorization`\n- Value: `Bearer YOUR_OPENROUTER_API_KEY`\n\nOpen `HTTP - OpenRouter AI` node → Credential → select it.\n\n**Step 2 — Change model (optional)**\nIn the `HTTP - OpenRouter AI` node body, `\"model\"` defaults to `openrouter/auto`.\nReplace with a specific model e.g.:\n- `anthropic/claude-3-5-sonnet`\n- `openai/gpt-4o`\n- `meta-llama/llama-3.1-70b-instruct`\n\n**Step 3 — n8n Variable: N8N_BASE_URL**\nIn n8n Admin → Variables, create:\n- Name: `N8N_BASE_URL`\n- Value: your n8n instance URL, e.g. `http://localhost:5678`\n\nThis workflow calls **Workflow 0 (Sheet Operations)** for all Google Sheets writes — no direct GSheets credential needed here.\n\n**Step 4 — Activate**\nToggle ON after setup.",
         "height": 440,
         "width": 380,
         "color": 3
@@ -68,7 +68,7 @@
     },
     {
       "parameters": {
-        "content": "## 📝 Write to Google Sheet\n\nUses `defineBelow` mapping mode with conditional expressions:\n```\n\"twitter_text\": \"={{ $json.platform === 'twitter' ? $json.text : undefined }}\"\n```\nOnly the active platform's columns are updated. Other platform columns are untouched because `undefined` values are skipped by the GSheets node.\n\nMatches on `post_id` — never creates a new row.",
+        "content": "## 📝 Write to Sheet via Workflow 0\n\nCalls the `pulse-sheet-ops` webhook (Workflow 0) with action `UPDATE_PLATFORM_VARIANT`.\n\nPayload: `{ postId, platform, variant: { text, hashtags, status, generatedAt } }`\n\nWorkflow 0 handles all column mapping and sheet updates in one central place. Set the `N8N_BASE_URL` n8n variable to your instance URL (e.g. `http://localhost:5678`).",
         "height": 200,
         "width": 440,
         "color": 4
@@ -109,7 +109,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Split incoming contentPrompts into one item per platform\nconst { postId, contentPrompts, callbackUrl } = $input.first().json;\n\nif (!postId || !contentPrompts || !callbackUrl) {\n  throw new Error('Missing required fields: postId, contentPrompts, callbackUrl');\n}\n\nconst items = [];\nfor (const [platform, prompts] of Object.entries(contentPrompts)) {\n  if (!prompts || !prompts.systemPrompt || !prompts.userPrompt) {\n    console.log(`Skipping ${platform} - missing systemPrompt or userPrompt`);\n    continue;\n  }\n  items.push({\n    json: {\n      postId,\n      platform,\n      systemPrompt: prompts.systemPrompt,\n      userPrompt: prompts.userPrompt,\n      context: prompts.context || {},\n      callbackUrl\n    }\n  });\n}\n\nif (items.length === 0) {\n  throw new Error('No valid platforms with content prompts found');\n}\n\nreturn items;\n"
+        "jsCode": "// Split incoming contentPrompts into one item per platform\nconst _raw = $input.first().json;\nconst { postId, contentPrompts, callbackUrl } = _raw.body ?? _raw;\n\nif (!postId || !contentPrompts || !callbackUrl) {\n  throw new Error('Missing required fields: postId, contentPrompts, callbackUrl');\n}\n\nconst items = [];\nfor (const [platform, prompts] of Object.entries(contentPrompts)) {\n  if (!prompts || !prompts.systemPrompt || !prompts.userPrompt) {\n    console.log(`Skipping ${platform} - missing systemPrompt or userPrompt`);\n    continue;\n  }\n  items.push({\n    json: {\n      postId,\n      platform,\n      systemPrompt: prompts.systemPrompt,\n      userPrompt: prompts.userPrompt,\n      context: prompts.context || {},\n      callbackUrl\n    }\n  });\n}\n\nif (items.length === 0) {\n  throw new Error('No valid platforms with content prompts found');\n}\n\nreturn items;\n"
       },
       "id": "wf1-n02-split-platforms",
       "name": "Code - Split by Platform",
@@ -119,40 +119,34 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "HTTP-Referer",
-              "value": "https://pulse.devengoratela.in"
-            },
-            {
-              "name": "X-Title",
-              "value": "Pulse Repurpose"
-            }
-          ]
-        },
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": []
-        },
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"openrouter/auto\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": {{ JSON.stringify($json.systemPrompt) }}\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify($json.userPrompt) }}\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_tokens\": 2000\n}",
+        "promptType": "define",
+        "text": "={{ $json.userPrompt }}",
         "options": {
+          "systemMessage": "={{ $json.systemPrompt }}"
+        }
+      },
+      "id": "wf1-n03-ai-agent",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [680, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "model": "openrouter/auto",
+        "options": {
+          "baseURL": "https://openrouter.ai/api/v1",
           "timeout": 60000
         }
       },
-      "id": "wf1-n03-openrouter",
-      "name": "HTTP - OpenRouter AI",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [680, 300],
+      "id": "wf1-n03a-chat-model",
+      "name": "OpenRouter Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [680, 460],
       "credentials": {
-        "httpHeaderAuth": {
+        "openAiApi": {
           "id": "YOUR_OPENROUTER_CREDENTIAL_ID",
           "name": "OpenRouter API Key"
         }
@@ -160,68 +154,25 @@
     },
     {
       "parameters": {
-        "jsCode": "// Parse AI response and extract text + hashtags\nconst postId = $('Code - Split by Platform').item.json.postId;\nconst platform = $('Code - Split by Platform').item.json.platform;\nconst callbackUrl = $('Code - Split by Platform').item.json.callbackUrl;\nconst context = $('Code - Split by Platform').item.json.context || {};\n\nconst response = $json;\nconst content = response?.choices?.[0]?.message?.content || '';\n\nif (!content) {\n  throw new Error(`OpenRouter returned empty content for ${platform}`);\n}\n\n// Extract hashtags (lines starting with # or words starting with #)\nconst hashtagMatches = content.match(/#[\\w]+/g) || [];\nconst hashtags = [...new Set(hashtagMatches.map(h => h.replace('#', '').toLowerCase()))];\n\n// Remove hashtag lines from the main text body for cleaner output\nconst text = content.trim();\n\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    postId,\n    platform,\n    callbackUrl,\n    text,\n    hashtags,\n    status: 'pending',\n    generatedAt: now\n  }\n}];\n"
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse AI Agent responses — zip by index to avoid broken item pairing\nconst agentOutputs = $input.all();\nconst splitItems = $('Code - Split by Platform').all();\nconst now = new Date().toISOString();\n\nreturn agentOutputs.map((agentItem, i) => {\n  const split = splitItems[i] || splitItems[0];\n  const postId = split.json.postId;\n  const platform = split.json.platform;\n  const callbackUrl = split.json.callbackUrl;\n\n  const content = agentItem.json?.output || '';\n  if (!content) {\n    throw new Error(`AI Agent returned empty content for ${platform}`);\n  }\n\n  const hashtagMatches = content.match(/#[\\w]+/g) || [];\n  const hashtags = [...new Set(hashtagMatches.map(h => h.replace('#', '').toLowerCase()))];\n  const text = content.trim();\n\n  return {\n    json: {\n      postId,\n      platform,\n      callbackUrl,\n      text,\n      hashtags,\n      status: 'pending',\n      generatedAt: now,\n      action: 'UPDATE_PLATFORM_VARIANT',\n      payload: { postId, platform, variant: { text, hashtags, status: 'pending', generatedAt: now } }\n    }\n  };\n});\n"
       },
       "id": "wf1-n04-parse-ai",
       "name": "Code - Parse AI Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [900, 300]
+      "position": [900, 300],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
-        "operation": "update",
-        "documentId": {
-          "__rl": true,
-          "value": "YOUR_SPREADSHEET_ID",
-          "mode": "id"
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": "Sheet1",
-          "mode": "name"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "post_id": "={{ $json.postId }}",
-            "twitter_text": "={{ $json.platform === 'twitter' ? $json.text : undefined }}",
-            "twitter_hashtags": "={{ $json.platform === 'twitter' ? $json.hashtags.join(',') : undefined }}",
-            "twitter_status": "={{ $json.platform === 'twitter' ? $json.status : undefined }}",
-            "twitter_generated_at": "={{ $json.platform === 'twitter' ? $json.generatedAt : undefined }}",
-            "threads_text": "={{ $json.platform === 'threads' ? $json.text : undefined }}",
-            "threads_hashtags": "={{ $json.platform === 'threads' ? $json.hashtags.join(',') : undefined }}",
-            "threads_status": "={{ $json.platform === 'threads' ? $json.status : undefined }}",
-            "threads_generated_at": "={{ $json.platform === 'threads' ? $json.generatedAt : undefined }}",
-            "instagram_text": "={{ $json.platform === 'instagram' ? $json.text : undefined }}",
-            "instagram_hashtags": "={{ $json.platform === 'instagram' ? $json.hashtags.join(',') : undefined }}",
-            "instagram_status": "={{ $json.platform === 'instagram' ? $json.status : undefined }}",
-            "instagram_generated_at": "={{ $json.platform === 'instagram' ? $json.generatedAt : undefined }}",
-            "facebook_text": "={{ $json.platform === 'facebook' ? $json.text : undefined }}",
-            "facebook_hashtags": "={{ $json.platform === 'facebook' ? $json.hashtags.join(',') : undefined }}",
-            "facebook_status": "={{ $json.platform === 'facebook' ? $json.status : undefined }}",
-            "facebook_generated_at": "={{ $json.platform === 'facebook' ? $json.generatedAt : undefined }}",
-            "skool_text": "={{ $json.platform === 'skool' ? $json.text : undefined }}",
-            "skool_hashtags": "={{ $json.platform === 'skool' ? $json.hashtags.join(',') : undefined }}",
-            "skool_status": "={{ $json.platform === 'skool' ? $json.status : undefined }}",
-            "skool_generated_at": "={{ $json.platform === 'skool' ? $json.generatedAt : undefined }}"
-          },
-          "matchingColumns": ["post_id"],
-          "schema": []
-        },
-        "options": {}
+        "workflowId": "WORKFLOW_0_ID"
       },
-      "id": "wf1-n05-gsheets-update",
-      "name": "GSheets - Write Generated Text",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.4,
-      "position": [1120, 300],
-      "credentials": {
-        "googleSheetsOAuth2Api": {
-          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
-          "name": "Google Sheets account"
-        }
-      }
+      "id": "wf1-n05-exec-sheet-ops",
+      "name": "Execute Workflow - Sheet Ops",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1120, 300]
     },
     {
       "parameters": {
@@ -253,7 +204,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Build error callback payload\nconst inputData = $input.first().json || {};\n// Try to get callbackUrl from the original webhook data\nlet callbackUrl = '';\nlet postId = '';\ntry {\n  callbackUrl = $('Webhook').first().json.callbackUrl || '';\n  postId = $('Webhook').first().json.postId || '';\n} catch(e) {}\n\nreturn [{\n  json: {\n    postId,\n    callbackUrl,\n    status: 'failed',\n    error: inputData.error?.message || 'Content generation failed'\n  }\n}];\n"
+        "jsCode": "// Build error callback payload\nconst inputData = $input.first().json || {};\n// Try to get callbackUrl from the original webhook data\nlet callbackUrl = '';\nlet postId = '';\ntry {\n  const _wh = $('Webhook').first().json;\n  const _whBody = _wh.body ?? _wh;\n  callbackUrl = _whBody.callbackUrl || '';\n  postId = _whBody.postId || '';\n} catch(e) {}\n\nreturn [{\n  json: {\n    postId,\n    callbackUrl,\n    status: 'failed',\n    error: inputData.error?.message || 'Content generation failed'\n  }\n}];\n"
       },
       "id": "wf1-n08-error-handler",
       "name": "Code - Error Handler",
@@ -295,19 +246,37 @@
       "main": [
         [
           {
-            "node": "HTTP - OpenRouter AI",
+            "node": "AI Agent",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP - OpenRouter AI": {
+    "AI Agent": {
       "main": [
         [
           {
             "node": "Code - Parse AI Response",
             "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code - Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
             "index": 0
           }
         ]
@@ -317,18 +286,32 @@
       "main": [
         [
           {
-            "node": "GSheets - Write Generated Text",
+            "node": "Execute Workflow - Sheet Ops",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code - Error Handler",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "GSheets - Write Generated Text": {
+    "Execute Workflow - Sheet Ops": {
       "main": [
         [
           {
             "node": "Code - Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code - Error Handler",
             "type": "main",
             "index": 0
           }
@@ -340,6 +323,17 @@
         [
           {
             "node": "HTTP - Callback Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Error Handler": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Callback Error",
             "type": "main",
             "index": 0
           }
