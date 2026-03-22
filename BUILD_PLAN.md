@@ -139,10 +139,40 @@ Pull real engagement metrics from published platforms via n8n and feed them back
 - **`POST /api/callback/analytics`**: n8n calls after metrics written → triggers cron learning update
 - **Cron Operation 9**: High-performing posts → `learnings.md` content performance section; low performers → patterns to avoid. Closes the performance → learning feedback loop.
 
-**n8n Workflow 0 changes:**
-- Update "Define Column Map" Code node — add `platformPostId`, analytics, and firstComment fields to COLUMN_MAP (full updated map in master plan)
-- Add `UPDATE_ANALYTICS` branch (Switch output 7): Code → GS Update → Respond
-- Update sticky notes to reflect 9 total actions
+**n8n Workflow 0 changes (15 steps — perform before app work):**
+
+*PART 1 — Google Sheet*
+- **Step 1**: Add 40 new column headers to the "Posts" sheet after column AW:
+  - Analytics (30 cols, AX–CA): `twitter_impressions`, `twitter_likes`, `twitter_comments`, `twitter_shares`, `twitter_engagement_rate`, `twitter_fetched_at` … same pattern for threads (BD–BI), instagram (BJ–BO), facebook (BP–BU), skool (BV–CA)
+  - First comment (10 cols, CB–CK): `twitter_first_comment`, `twitter_first_comment_status` … same pattern for threads (CD–CE), instagram (CF–CG), facebook (CH–CI), skool (CJ–CK)
+
+*PART 2 — Define Column Map node*
+- **Step 2**: Open "Define Column Map" Code node. Replace the COLUMN_MAP constant entirely with the expanded version from master plan — adds `impressions`, `likes`, `comments`, `shares`, `engagementRate`, `fetchedAt`, `firstComment`, `firstCommentStatus` per platform. The `body` and `return` lines stay the same.
+
+*PART 3 — Route Action Switch node*
+- **Step 3**: Open "Route Action" Switch node. Add two new rules (existing rules 0–6 unchanged):
+  - Output 7 → `UPDATE_ANALYTICS` (`{{ $json.action }}` equals `UPDATE_ANALYTICS`)
+  - Output 8 → `UPDATE_FIRST_COMMENT` (`{{ $json.action }}` equals `UPDATE_FIRST_COMMENT`)
+
+*PART 4 — New Branch 7: UPDATE_ANALYTICS*
+- **Step 4**: Add Code node "Build Analytics Update" (Run Once for All Items) — code from master plan: reads `{ postId, platform, metrics }` from payload, maps to column letters via COLUMN_MAP, always writes `fetchedAt` timestamp
+- **Step 5**: Add Google Sheets node "GS Update Analytics" — Operation: Update, Sheet: Posts, Matching Column: `post_id`
+- **Step 6**: Add Respond to Webhook node "Respond: UPDATE_ANALYTICS" — Response Body: `{"success":true}`
+- **Step 7**: Connect: Switch output 7 → Build Analytics Update → GS Update Analytics → Respond: UPDATE_ANALYTICS
+
+*PART 5 — New Branch 8: UPDATE_FIRST_COMMENT*
+- **Step 8**: Add Code node "Build First Comment Update" (Run Once for All Items) — code from master plan: reads `{ postId, platform, firstComment, firstCommentStatus }` from payload, maps to column letters via COLUMN_MAP
+- **Step 9**: Add Google Sheets node "GS Update First Comment" — Operation: Update, Sheet: Posts, Matching Column: `post_id`
+- **Step 10**: Add Respond to Webhook node "Respond: UPDATE_FIRST_COMMENT" — Response Body: `{"success":true}`
+- **Step 11**: Connect: Switch output 8 → Build First Comment Update → GS Update First Comment → Respond: UPDATE_FIRST_COMMENT
+
+*PART 6 — Sticky notes*
+- **Step 12**: Update overview sticky: `SUPPORTED ACTIONS (7 total)` → `(9 total)`, add `UPDATE_ANALYTICS` and `UPDATE_FIRST_COMMENT` to action list
+- **Step 13**: Update Switch sticky: add `7 → UPDATE_ANALYTICS`, `8 → UPDATE_FIRST_COMMENT` to OUTPUT MAPPING
+
+*PART 7 — Save & Verify*
+- **Step 14**: Save workflow (already active, no need to re-activate)
+- **Step 15**: Smoke test with curl — see master plan for exact payloads. Expected response: `{"success":true}` for both actions.
 
 **n8n Workflow 3 changes (run before Session 12 analytics work):**
 - After each platform publish API call succeeds: extract platform-native post ID from response
@@ -172,8 +202,8 @@ Schedule the first comment alongside a post (critical for LinkedIn hashtag/link 
 - **Publish API update**: Include `firstComment` field in `PublishWebhookPayload`
 
 **n8n Workflow 0 changes:**
-- Add `UPDATE_FIRST_COMMENT` branch (Switch output 8): Code → GS Update → Respond
-- COLUMN_MAP already updated in Session 12 (firstComment + firstCommentStatus columns)
+- Steps 8–11 from the Session 12 Workflow 0 guide (Branch 8: UPDATE_FIRST_COMMENT) apply here if not already done
+- COLUMN_MAP already updated in Session 12 (firstComment + firstCommentStatus columns added)
 
 **n8n Workflow 3 changes:**
 - After publish success: IF node "Has First Comment" checks `payload.firstComment`

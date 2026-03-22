@@ -4981,6 +4981,151 @@ return [{ json: updateObj }];
 
 → Respond to Webhook "Respond: UPDATE_FIRST_COMMENT": `{"success":true}`
 
+#### Step-by-step implementation guide (15 steps)
+
+Perform these steps in order. The workflow is already active — do NOT deactivate it.
+
+**PART 1 — Google Sheet (do this first)**
+
+**Step 1 — Add 40 new column headers to the "Posts" sheet**, appended after column AW:
+
+| Column | Header |
+|--------|--------|
+| AX | twitter_impressions |
+| AY | twitter_likes |
+| AZ | twitter_comments |
+| BA | twitter_shares |
+| BB | twitter_engagement_rate |
+| BC | twitter_fetched_at |
+| BD | threads_impressions |
+| BE | threads_likes |
+| BF | threads_comments |
+| BG | threads_shares |
+| BH | threads_engagement_rate |
+| BI | threads_fetched_at |
+| BJ | instagram_impressions |
+| BK | instagram_likes |
+| BL | instagram_comments |
+| BM | instagram_shares |
+| BN | instagram_engagement_rate |
+| BO | instagram_fetched_at |
+| BP | facebook_impressions |
+| BQ | facebook_likes |
+| BR | facebook_comments |
+| BS | facebook_shares |
+| BT | facebook_engagement_rate |
+| BU | facebook_fetched_at |
+| BV | skool_impressions |
+| BW | skool_likes |
+| BX | skool_comments |
+| BY | skool_shares |
+| BZ | skool_engagement_rate |
+| CA | skool_fetched_at |
+| CB | twitter_first_comment |
+| CC | twitter_first_comment_status |
+| CD | threads_first_comment |
+| CE | threads_first_comment_status |
+| CF | instagram_first_comment |
+| CG | instagram_first_comment_status |
+| CH | facebook_first_comment |
+| CI | facebook_first_comment_status |
+| CJ | skool_first_comment |
+| CK | skool_first_comment_status |
+
+**PART 2 — "Define Column Map" Code Node**
+
+**Step 2 — Open the "Define Column Map" node. Replace the entire COLUMN_MAP constant** with the updated version from the "Updated COLUMN_MAP" section above. The `body` and `return` lines at the end stay the same — only the object literal changes.
+
+**PART 3 — "Route Action" Switch Node**
+
+**Step 3 — Open the "Route Action" Switch node. Add two new rules** (do not modify existing rules 0–6):
+- Rule for **Output 7**: condition `{{ $json.action }}` equals `UPDATE_ANALYTICS`
+- Rule for **Output 8**: condition `{{ $json.action }}` equals `UPDATE_FIRST_COMMENT`
+
+**PART 4 — New Branch 7: UPDATE_ANALYTICS**
+
+**Step 4 — Add a Code node named "Build Analytics Update"**
+- Mode: Run Once for All Items
+- Code: (see "New Branch 7 — UPDATE_ANALYTICS" section above)
+
+**Step 5 — Add a Google Sheets node named "GS Update Analytics"**
+- Operation: Update
+- Document: same spreadsheet (SPREADSHEET_ID variable)
+- Sheet: Posts
+- Matching Column: `post_id`
+- Value to Update: map from incoming item fields
+
+**Step 6 — Add a Respond to Webhook node named "Respond: UPDATE_ANALYTICS"**
+- Response Body: `{"success":true}`
+
+**Step 7 — Connect the three nodes:**
+Switch output 7 → Build Analytics Update → GS Update Analytics → Respond: UPDATE_ANALYTICS
+
+**PART 5 — New Branch 8: UPDATE_FIRST_COMMENT**
+
+**Step 8 — Add a Code node named "Build First Comment Update"**
+- Mode: Run Once for All Items
+- Code: (see "New Branch 8 — UPDATE_FIRST_COMMENT" section above)
+
+**Step 9 — Add a Google Sheets node named "GS Update First Comment"**
+- Operation: Update
+- Document: same spreadsheet (SPREADSHEET_ID variable)
+- Sheet: Posts
+- Matching Column: `post_id`
+- Value to Update: map from incoming item fields
+
+**Step 10 — Add a Respond to Webhook node named "Respond: UPDATE_FIRST_COMMENT"**
+- Response Body: `{"success":true}`
+
+**Step 11 — Connect the three nodes:**
+Switch output 8 → Build First Comment Update → GS Update First Comment → Respond: UPDATE_FIRST_COMMENT
+
+**PART 6 — Update Sticky Notes**
+
+**Step 12 — Update the "PULSE - SHEET OPERATIONS (Workflow 0)" overview sticky note:**
+- Change `SUPPORTED ACTIONS (7 total)` → `SUPPORTED ACTIONS (9 total)`
+- Add to action list: `UPDATE_ANALYTICS → Write engagement metrics for one platform`
+- Add to action list: `UPDATE_FIRST_COMMENT → Write first comment text and status for one platform`
+
+**Step 13 — Update the "🔀 ACTION ROUTER (Switch)" sticky note:**
+- Add to OUTPUT MAPPING: `7 → UPDATE_ANALYTICS`
+- Add to OUTPUT MAPPING: `8 → UPDATE_FIRST_COMMENT`
+
+**PART 7 — Save & Verify**
+
+**Step 14 — Save the workflow** (already active; no need to re-activate).
+
+**Step 15 — Smoke test both new actions with curl:**
+
+```bash
+# Test UPDATE_ANALYTICS
+curl -X POST https://n8n.devengoratela.in/webhook/pulse-sheet \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "UPDATE_ANALYTICS",
+    "payload": {
+      "postId": "YOUR_REAL_POST_ID",
+      "platform": "twitter",
+      "metrics": { "impressions": 100, "likes": 10, "comments": 2, "shares": 3, "engagementRate": 15.0 }
+    }
+  }'
+# Expected: {"success":true}
+
+# Test UPDATE_FIRST_COMMENT
+curl -X POST https://n8n.devengoratela.in/webhook/pulse-sheet \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "UPDATE_FIRST_COMMENT",
+    "payload": {
+      "postId": "YOUR_REAL_POST_ID",
+      "platform": "twitter",
+      "firstComment": "What do you think?",
+      "firstCommentStatus": "pending"
+    }
+  }'
+# Expected: {"success":true}
+```
+
 #### New app-side lib/n8n-sheet.ts functions
 
 ```typescript
