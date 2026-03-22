@@ -1,0 +1,3763 @@
+{
+  "name": "Pulse - Sheet Operations",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## PULSE - SHEET OPERATIONS (Workflow 0)\n\n**PURPOSE:**\nSingle gateway for ALL Google Sheet read/write operations.\nEvery other workflow and the app itself calls THIS workflow\ninstead of touching Google Sheets directly.\nThe app has zero Google credentials — this workflow owns all Sheet access.\n\n**TRIGGER:** POST webhook — called by:\n- App routes (via lib/n8n-sheet.ts helper)\n- Workflow 1 (Content Repurpose) — to write generated text\n- Workflow 2 (Image Repurpose) — to write image URLs\n- Workflow 3 (Publish) — to update post status\n\n**CRITICAL — THIS WORKFLOW IS SYNCHRONOUS:**\nUnlike Workflows 1, 2, 3 which respond immediately and process async,\nthis workflow MUST complete the Sheet operation BEFORE responding.\nThe caller is waiting for the response — do NOT use immediate response.\nTimeout on caller side is 15 seconds. Keep Sheet operations fast.\n\n**SUPPORTED ACTIONS (9 total):**\n- GET_ALL_POSTS → Read all rows, map to LinkedInPost[]\n- GET_POST_BY_ID → Find one row by post_id\n- UPDATE_PLATFORM_VARIANT → Update one platform's columns on one row\n- UPDATE_MULTIPLE_PLATFORMS → Update all platforms on one row (batch)\n- WRITE_CONTENT_PROMPTS → Write content_prompt columns only\n- WRITE_IMAGE_PROMPTS → Write image_prompt columns only\n- UPDATE_STATUS → Write status/published_at/error columns only\n- UPDATE_ANALYTICS → Write engagement metrics (impressions, likes, comments, shares, engagement_rate) for one platform\n- UPDATE_FIRST_COMMENT → Write first comment text and status for one platform\n\n**GOOGLE SHEET STRUCTURE:**\nSheet name: \"Posts\"\nColumns A-D: post_id, linkedin_text, linkedin_image_url, posted_at\nColumns E-AW: 5 platforms × 9 columns each\n\n**CREDENTIALS REQUIRED:**\nGoogle Sheets service account — credential name: \"Google Sheets - Pulse Repurpose\"\nSpreadsheet ID: stored in n8n variable SPREADSHEET_ID\n\n12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI",
+        "height": 820,
+        "width": 1500,
+        "color": 3
+      },
+      "id": "422f3769-c484-4723-a872-5931155fcec0",
+      "name": "📋 WORKFLOW OVERVIEW",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1088,
+        -944
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⚡ WEBHOOK TRIGGER\n\n**Path:** pulse-sheet | **Method:** POST\n**Response Mode:** Using Respond to Webhook Node\n\n**WHY \"RESPOND TO WEBHOOK\" MODE?**\nThis mode tells n8n NOT to auto-respond after the trigger fires.\nEach action branch ends with its own Respond to Webhook node.\nRequired for synchronous request/response behaviour.\n\n**EXPECTED REQUEST ENVELOPE:**\n```\n{ \"action\": \"GET_ALL_POSTS\" | ..., \"payload\": { ... } }\n```\n\n**COPY THIS URL after activating:**\n→ Add to .env.local as N8N_SHEET_WEBHOOK_URL\n→ This is the most important URL in the entire system.\n\n**TESTING:**\n```\ncurl -X POST [this-url] \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"action\":\"GET_ALL_POSTS\",\"payload\":{}}'\n```",
+        "height": 592,
+        "width": 1056,
+        "color": 4
+      },
+      "id": "6acf1d41-ffa7-4405-8202-c1bd0a5c6701",
+      "name": "⚡ WEBHOOK TRIGGER",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1104,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🗺️ DEFINE COLUMN MAP\n\nThis Code node defines COLUMN_MAP and passes it downstream\nto every branch. Single source of truth for column positions.\n\n**WHY A CODE NODE?**\nAccessible via `$('Define Column Map').first().json.COLUMN_MAP`\nfrom any downstream node in any branch.\n\n**COLUMN LAYOUT (9 per platform):**\n[0] text [1] content_prompt [2] image_prompt\n[3] image_url [4] hashtags [5] status\n[6] scheduled_at [7] published_at [8] error\n\n**PLATFORM → COLUMNS:**\ntwitter: E–M | threads: N–V\ninstagram: W–AE | facebook: AF–AN | skool: AO–AW\n\n**IF YOU ADD A COLUMN IN FUTURE:**\nUpdate ONLY this node — all other nodes reference\nCOLUMN_MAP dynamically.",
+        "height": 460,
+        "width": 560
+      },
+      "id": "fafa56fb-5514-4b4e-b57c-dde1b4295be9",
+      "name": "🗺️ COLUMN MAP",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -608,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🔀 ACTION ROUTER (Switch)\n\nRoutes requests to correct branch based on action field.\n\n**OUTPUT MAPPING:**\n0 → GET_ALL_POSTS\n1 → GET_POST_BY_ID\n2 → UPDATE_PLATFORM_VARIANT\n3 → UPDATE_MULTIPLE_PLATFORMS\n4 → WRITE_CONTENT_PROMPTS\n5 → WRITE_IMAGE_PROMPTS\n6 → UPDATE_STATUS\n7 → UPDATE_ANALYTICS\n8 → UPDATE_FIRST_COMMENT\n\n**ADDING A NEW ACTION IN FUTURE:**\n1. Add a rule to this Switch node\n2. Build the branch (Code + GSheets + Respond)\n3. Update SheetAction type in types/index.ts\n4. Add function to lib/n8n-sheet.ts",
+        "height": 360,
+        "width": 560,
+        "color": 5
+      },
+      "id": "d4081123-ea88-43f1-a297-b3196938c06d",
+      "name": "🔀 ACTION ROUTER",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -608,
+        1104
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 📖 GET ALL POSTS\n\nReads all rows from Posts sheet → maps to LinkedInPost[].\n\n**OPTIONAL FILTERS (pass in payload):**\nstatusFilter, platformFilter, fromDate, toDate\n\n**GS NODE:** Get Many, Return All: YES, First Row as Headers: YES\n\n**PERFORMANCE NOTE:**\nReads ALL rows each call. Fine for <1000 rows.\nConsider pagination if sheet grows large.\n\n**RESPONSE:** `{ success: true, posts: LinkedInPost[] }`",
+        "height": 340,
+        "width": 500
+      },
+      "id": "2b31143a-bbe8-42ea-81bb-269899fda3c4",
+      "name": "📖 GET ALL POSTS",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        -1056
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🔍 GET POST BY ID\n\nReads all rows, finds matching post_id, maps to LinkedInPost.\n\n**PAYLOAD:** `{ postId: \"post_001\" }`\n\n**RESPONSE:**\n- `{ success: true, post: LinkedInPost }` if found\n- `{ success: true, post: null }` if not found\n\n**USED BY:**\n- App on every page load\n- Callback routes after n8n workflows complete\n- Publish route before sending to Workflow 3",
+        "height": 320,
+        "width": 500
+      },
+      "id": "d8eec629-4341-4a1e-85ac-e713bde1fad8",
+      "name": "🔍 GET POST BY ID",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        -768
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ✏️ UPDATE PLATFORM VARIANT\n\nUpdates specific columns for ONE platform on ONE row.\nOnly fields explicitly provided are written.\n\n**PAYLOAD:**\n```\n{ postId, platform: \"twitter\",\n  variant: { text, status, scheduledAt, ... } }\n```\n\n**USED BY:**\n- User approving a single platform variant\n- User scheduling a single platform\n- Manual edits from repurpose page",
+        "height": 320,
+        "width": 500
+      },
+      "id": "eb26f12b-a09c-4178-99ce-3a5dd1cb4dd1",
+      "name": "✏️ UPDATE VARIANT",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        -464
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ✏️✏️ UPDATE MULTIPLE PLATFORMS\n\nUpdates MULTIPLE platforms on ONE row in a single API call.\nMore efficient than calling UPDATE_PLATFORM_VARIANT 5 times.\n\n**PAYLOAD:**\n```\n{ postId, variants: {\n  twitter: { text, hashtags, status },\n  threads: { text, hashtags, status }, ... } }\n```\n\n**USED BY:**\n- Workflow 1 after Claude generates all platforms\n- Workflow 2 after fal.ai generates all images\n- Error handlers to set all platforms to \"failed\" ",
+        "height": 340,
+        "width": 500
+      },
+      "id": "fb4efd08-24ea-48e3-8471-8358f5da3c5b",
+      "name": "✏️✏️ UPDATE MULTI",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 📝 WRITE CONTENT PROMPTS\n\nWrites content_prompt column for each platform.\nCalled BEFORE firing Workflow 1 — persists prompt even if workflow fails.\n\n**PAYLOAD:**\n```\n{ postId, prompts: {\n  twitter: \"{\"systemPrompt\":\"...\",\"userPrompt\":\"...\"}\",\n  threads: \"...\" } }\n```\nStored as JSON string. To read: JSON.parse(row.twitter_content_prompt)\n\n**AUDIT USE:** Stored prompts show exactly what was sent to Claude.",
+        "height": 340,
+        "width": 500
+      },
+      "id": "b8040809-22b3-4162-9bea-8db78b56b736",
+      "name": "📝 CONTENT PROMPTS",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🎨 WRITE IMAGE PROMPTS\n\nWrites image_prompt column for each platform.\nCalled BEFORE firing Workflow 2 — persists prompt even if fal.ai fails.\n\n**PAYLOAD:**\n```\n{ postId, prompts: {\n  twitter: \"A leaking bucket — metaphor for churn...\",\n  threads: \"Warm minimal scene showing...\" } }\n```\nStored as plain string (not JSON).\n\n**WHY PERSIST BEFORE GENERATION?**\nIf fal.ai fails, prompt is already in Sheet.\nUser can see what was attempted and trigger regeneration.",
+        "height": 340,
+        "width": 500
+      },
+      "id": "b1bf162d-4ed8-4abd-bf5e-87983cfb13cf",
+      "name": "🎨 IMAGE PROMPTS",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🚦 UPDATE STATUS\n\nLightweight status-only update. Writes status, optionally\npublished_at and error for one platform.\n\n**PAYLOAD:**\n```\n{ postId, platform: \"twitter\",\n  status: \"published\",\n  publishedAt: \"2026-03-17T14:00:00Z\",\n  error: \"...\" }\n```\n\n**VALID STATUS:** pending → repurposed → approved\n→ scheduled → published / failed\n\n**USED BY:**\n- Workflow 3 after successful publish\n- Workflow 3 error handler on failure",
+        "height": 360,
+        "width": 500
+      },
+      "id": "21b9a4b6-54fd-4cf5-86fc-0ae7a64b433e",
+      "name": "🚦 UPDATE STATUS",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ❌ ERROR HANDLER\n\nCatches unhandled errors in any branch.\n\n**RETURNS HTTP 200 (not 500) with JSON error body.**\nApp checks response.data.success === false, NOT HTTP status.\nPrevents axios from throwing, allows graceful handling.\n\n**ERROR FORMAT:** `{ \"success\": false, \"error\": \"...\" }`\n\n**COMMON ERRORS:**\n- \"caller does not have permission\" → Share sheet with service account\n- \"Unable to parse range\" → Sheet tab must be named exactly \"Posts\"\n- \"Quota exceeded\" → Google Sheets API rate limit, add Wait node\n- \"No items\" / empty → Sheet empty or post_id col A is blank\n\n**DEBUG TIP:** Enable \"Save Execution Data\" in workflow settings.",
+        "height": 460,
+        "width": 560,
+        "color": 2
+      },
+      "id": "6d6f6a65-1c5d-4878-a1be-2eb3ac6e64ae",
+      "name": "❌ ERROR HANDLER",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        560,
+        1392
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pulse-sheet",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e30ba89f-a2b9-436c-b6b3-bd24f274001a",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        304
+      ],
+      "webhookId": "3555a44e-0c43-4304-96be-aab97230c98f"
+    },
+    {
+      "parameters": {
+        "jsCode": "const COLUMN_MAP = {\n  twitter:   {\n    text:'E', contentPrompt:'F', imagePrompt:'G', imageUrl:'H', hashtags:'I',\n    status:'J', scheduledAt:'K', publishedAt:'L', error:'M',\n    impressions:'AX', likes:'AY', comments:'AZ', shares:'BA', engagementRate:'BB', fetchedAt:'BC',\n    firstComment:'CB', firstCommentStatus:'CC',\n  },\n  threads:   {\n    text:'N', contentPrompt:'O', imagePrompt:'P', imageUrl:'Q', hashtags:'R',\n    status:'S', scheduledAt:'T', publishedAt:'U', error:'V',\n    impressions:'BD', likes:'BE', comments:'BF', shares:'BG', engagementRate:'BH', fetchedAt:'BI',\n    firstComment:'CD', firstCommentStatus:'CE',\n  },\n  instagram: {\n    text:'W', contentPrompt:'X', imagePrompt:'Y', imageUrl:'Z', hashtags:'AA',\n    status:'AB', scheduledAt:'AC', publishedAt:'AD', error:'AE',\n    impressions:'BJ', likes:'BK', comments:'BL', shares:'BM', engagementRate:'BN', fetchedAt:'BO',\n    firstComment:'CF', firstCommentStatus:'CG',\n  },\n  facebook:  {\n    text:'AF', contentPrompt:'AG', imagePrompt:'AH', imageUrl:'AI', hashtags:'AJ',\n    status:'AK', scheduledAt:'AL', publishedAt:'AM', error:'AN',\n    impressions:'BP', likes:'BQ', comments:'BR', shares:'BS', engagementRate:'BT', fetchedAt:'BU',\n    firstComment:'CH', firstCommentStatus:'CI',\n  },\n  skool:     {\n    text:'AO', contentPrompt:'AP', imagePrompt:'AQ', imageUrl:'AR', hashtags:'AS',\n    status:'AT', scheduledAt:'AU', publishedAt:'AV', error:'AW',\n    impressions:'BV', likes:'BW', comments:'BX', shares:'BY', engagementRate:'BZ', fetchedAt:'CA',\n    firstComment:'CJ', firstCommentStatus:'CK',\n  },\n};\nconst body = $input.first().json.body;\nreturn [{ json: { ...body, COLUMN_MAP } }];"
+      },
+      "id": "cdfb9e01-f90f-4b63-b695-3a87a239286b",
+      "name": "Define Column Map",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "458fbdd3-a060-45a1-932a-9b43ea304bdc",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "GET_ALL_POSTS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "1cf31c1d-a256-426c-b6c6-183a234aa237",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "GET_POST_BY_ID",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "8010cee6-d00c-45f2-b33d-decebdf1be37",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "UPDATE_PLATFORM_VARIANT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "050fe5d0-df52-4824-a210-84eeeb2ff12e",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "UPDATE_MULTIPLE_PLATFORMS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "9d10329a-c2df-4b40-8fdd-8afbc612731f",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "WRITE_CONTENT_PROMPTS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "ae7decaf-ad89-48bf-938b-71167be81920",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "WRITE_IMAGE_PROMPTS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "60853da9-582a-49f6-99a4-549621dea289",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "UPDATE_STATUS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "590d8d70-aca5-4271-bbbc-279bb8e28f24",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "UPDATE_ANALYTICS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "95363385-838c-4ed2-9273-64d041f639ea",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "UPDATE_FIRST_COMMENT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e654ea7b-ffd5-41aa-8e7b-9f053407aa4a",
+      "name": "Route Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        480,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1168138355,
+          "mode": "list",
+          "cachedResultName": "Pulse-Repurpose-App",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI/edit#gid=1168138355"
+        },
+        "options": {}
+      },
+      "id": "0f42aa32-4890-413c-befa-5b5fa9dc1dba",
+      "name": "GS Read All Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        -896
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ujTRaPhtGjVV4RCC",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nconst COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;\nconst payload = $('Define Column Map').first().json.payload || {};\nconst platforms = ['twitter','threads','instagram','facebook','skool'];\nconst posts = rows.map(row => {\n  const r = row.json;\n  if (!r['post_id']) return null;\n  const platformData = {};\n  platforms.forEach(p => {\n    const cols = COLUMN_MAP[p];\n    platformData[p] = {\n      text: r[cols.text] || null,\n      contentPrompt: r[cols.contentPrompt] || null,\n      imagePrompt: r[cols.imagePrompt] || null,\n      imageUrl: r[cols.imageUrl] || null,\n      hashtags: r[cols.hashtags] ? r[cols.hashtags].split(',').map(h => h.trim()).filter(Boolean) : [],\n      status: r[cols.status] || 'pending',\n      scheduledAt: r[cols.scheduledAt] || null,\n      publishedAt: r[cols.publishedAt] || null,\n      error: r[cols.error] || null,\n    };\n  });\n  return { id: r['post_id'], linkedinText: r['linkedin_text'] || null,\n           linkedinImageUrl: r['linkedin_image_url'] || null, postedAt: r['posted_at'] || null,\n           platforms: platformData };\n}).filter(Boolean);\nlet filtered = posts;\nif (payload.statusFilter) filtered = filtered.filter(p => Object.values(p.platforms).some(v => v.status === payload.statusFilter));\nif (payload.platformFilter) filtered = filtered.filter(p => p.platforms[payload.platformFilter]?.text);\nif (payload.fromDate) filtered = filtered.filter(p => p.postedAt >= payload.fromDate);\nif (payload.toDate) filtered = filtered.filter(p => p.postedAt <= payload.toDate);\nreturn [{ json: { success: true, posts: filtered } }];"
+      },
+      "id": "8678d66e-17a2-481d-ab27-cd2bfbc1127b",
+      "name": "Map Rows To Posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        -896
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "9d1ef34d-4b6e-45e5-a2b8-0d1ca8611749",
+      "name": "Respond: GET_ALL_POSTS",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        -896
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1168138355,
+          "mode": "list",
+          "cachedResultName": "Pulse-Repurpose-App",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI/edit#gid=1168138355"
+        },
+        "options": {}
+      },
+      "id": "388952b5-87f0-4751-a6b1-afc75b4f36a4",
+      "name": "GS Read For Lookup",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        -608
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ujTRaPhtGjVV4RCC",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nconst COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;\nconst postId = $('Define Column Map').first().json.payload?.postId;\nconst platforms = ['twitter','threads','instagram','facebook','skool'];\nconst row = rows.find(r => r.json['post_id'] === postId);\nif (!row) return [{ json: { success: true, post: null } }];\nconst r = row.json;\nconst platformData = {};\nplatforms.forEach(p => {\n  const cols = COLUMN_MAP[p];\n  platformData[p] = {\n    text: r[cols.text] || null,\n    contentPrompt: r[cols.contentPrompt] || null,\n    imagePrompt: r[cols.imagePrompt] || null,\n    imageUrl: r[cols.imageUrl] || null,\n    hashtags: r[cols.hashtags] ? r[cols.hashtags].split(',').map(h => h.trim()).filter(Boolean) : [],\n    status: r[cols.status] || 'pending',\n    scheduledAt: r[cols.scheduledAt] || null,\n    publishedAt: r[cols.publishedAt] || null,\n    error: r[cols.error] || null,\n  };\n});\nreturn [{ json: { success: true, post: { id: r['post_id'], linkedinText: r['linkedin_text'] || null,\n  linkedinImageUrl: r['linkedin_image_url'] || null, postedAt: r['posted_at'] || null,\n  platforms: platformData } } }];"
+      },
+      "id": "340cf75d-47e3-4264-9029-75ba9869b354",
+      "name": "Find Row By Post ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        -608
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "5bb6467f-343b-441b-abd0-c4c7984534eb",
+      "name": "Respond: GET_POST_BY_ID",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        -608
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;\nconst { postId, platform, variant } = $('Define Column Map').first().json.payload;\nconst cols = COLUMN_MAP[platform];\nconst updateObj = { 'post_id': postId };\nif (variant.text !== undefined) updateObj[cols.text] = variant.text;\nif (variant.contentPrompt !== undefined) updateObj[cols.contentPrompt] = variant.contentPrompt;\nif (variant.imagePrompt !== undefined) updateObj[cols.imagePrompt] = variant.imagePrompt;\nif (variant.imageUrl !== undefined) updateObj[cols.imageUrl] = variant.imageUrl;\nif (variant.hashtags !== undefined) updateObj[cols.hashtags] = Array.isArray(variant.hashtags) ? variant.hashtags.join(',') : variant.hashtags;\nif (variant.status !== undefined) updateObj[cols.status] = variant.status;\nif (variant.scheduledAt !== undefined) updateObj[cols.scheduledAt] = variant.scheduledAt || '';\nif (variant.publishedAt !== undefined) updateObj[cols.publishedAt] = variant.publishedAt || '';\nif (variant.error !== undefined) updateObj[cols.error] = variant.error || '';\nreturn [{ json: updateObj }];"
+      },
+      "id": "cd558fbe-20af-4dc9-916d-0252b6a5e245",
+      "name": "Build Single Variant Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        -304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1168138355,
+          "mode": "list",
+          "cachedResultName": "Pulse-Repurpose-App",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI/edit#gid=1168138355"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "post_id"
+          ],
+          "schema": [
+            {
+              "id": "post_id",
+              "displayName": "post_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "linkedin_text",
+              "displayName": "linkedin_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "linkedin_image_url",
+              "displayName": "linkedin_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "posted_at",
+              "displayName": "posted_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_text",
+              "displayName": "twitter_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_content_prompt",
+              "displayName": "twitter_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_image_prompt",
+              "displayName": "twitter_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_image_url",
+              "displayName": "twitter_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_hashtags",
+              "displayName": "twitter_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_status",
+              "displayName": "twitter_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_scheduled_at",
+              "displayName": "twitter_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_published_at",
+              "displayName": "twitter_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_error",
+              "displayName": "twitter_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_text",
+              "displayName": "threads_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_content_prompt",
+              "displayName": "threads_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_image_prompt",
+              "displayName": "threads_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_image_url",
+              "displayName": "threads_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_hashtags",
+              "displayName": "threads_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_status",
+              "displayName": "threads_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_scheduled_at",
+              "displayName": "threads_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_published_at",
+              "displayName": "threads_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_error",
+              "displayName": "threads_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_text",
+              "displayName": "instagram_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_content_prompt",
+              "displayName": "instagram_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_image_prompt",
+              "displayName": "instagram_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_image_url",
+              "displayName": "instagram_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_hashtags",
+              "displayName": "instagram_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_status",
+              "displayName": "instagram_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_scheduled_at",
+              "displayName": "instagram_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_published_at",
+              "displayName": "instagram_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_error",
+              "displayName": "instagram_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_text",
+              "displayName": "facebook_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_content_prompt",
+              "displayName": "facebook_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_image_prompt",
+              "displayName": "facebook_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_image_url",
+              "displayName": "facebook_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_hashtags",
+              "displayName": "facebook_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_status",
+              "displayName": "facebook_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_scheduled_at",
+              "displayName": "facebook_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_published_at",
+              "displayName": "facebook_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_error",
+              "displayName": "facebook_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_text",
+              "displayName": "skool_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_content_prompt",
+              "displayName": "skool_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_image_prompt",
+              "displayName": "skool_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_image_url",
+              "displayName": "skool_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_hashtags",
+              "displayName": "skool_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_status",
+              "displayName": "skool_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_scheduled_at",
+              "displayName": "skool_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_published_at",
+              "displayName": "skool_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_error",
+              "displayName": "skool_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "bf5e4065-27cb-4bd8-9ff6-77868fc9bdc1",
+      "name": "GS Update Single Variant",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        960,
+        -304
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ujTRaPhtGjVV4RCC",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "{\"success\":true}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "c67f967a-cc6b-4cef-b616-e610840ac13b",
+      "name": "Respond: UPDATE_VARIANT",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        -304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;\nconst { postId, variants } = $('Define Column Map').first().json.payload;\nconst updateObj = { 'post_id': postId };\nObject.entries(variants).forEach(([platform, variant]) => {\n  const cols = COLUMN_MAP[platform];\n  if (!cols) return;\n  if (variant.text !== undefined) updateObj[cols.text] = variant.text;\n  if (variant.contentPrompt !== undefined) updateObj[cols.contentPrompt] = variant.contentPrompt;\n  if (variant.imagePrompt !== undefined) updateObj[cols.imagePrompt] = variant.imagePrompt;\n  if (variant.imageUrl !== undefined) updateObj[cols.imageUrl] = variant.imageUrl;\n  if (variant.hashtags !== undefined) updateObj[cols.hashtags] = Array.isArray(variant.hashtags) ? variant.hashtags.join(',') : variant.hashtags;\n  if (variant.status !== undefined) updateObj[cols.status] = variant.status;\n  if (variant.scheduledAt !== undefined) updateObj[cols.scheduledAt] = variant.scheduledAt || '';\n  if (variant.publishedAt !== undefined) updateObj[cols.publishedAt] = variant.publishedAt || '';\n  if (variant.error !== undefined) updateObj[cols.error] = variant.error || '';\n});\nreturn [{ json: updateObj }];"
+      },
+      "id": "b6b000cb-fba3-487b-b77e-14786efefeda",
+      "name": "Build Multi Platform Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1168138355,
+          "mode": "list",
+          "cachedResultName": "Pulse-Repurpose-App",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI/edit#gid=1168138355"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "post_id"
+          ],
+          "schema": [
+            {
+              "id": "post_id",
+              "displayName": "post_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "linkedin_text",
+              "displayName": "linkedin_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "linkedin_image_url",
+              "displayName": "linkedin_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "posted_at",
+              "displayName": "posted_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_text",
+              "displayName": "twitter_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_content_prompt",
+              "displayName": "twitter_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_image_prompt",
+              "displayName": "twitter_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_image_url",
+              "displayName": "twitter_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_hashtags",
+              "displayName": "twitter_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_status",
+              "displayName": "twitter_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_scheduled_at",
+              "displayName": "twitter_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_published_at",
+              "displayName": "twitter_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_error",
+              "displayName": "twitter_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_text",
+              "displayName": "threads_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_content_prompt",
+              "displayName": "threads_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_image_prompt",
+              "displayName": "threads_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_image_url",
+              "displayName": "threads_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_hashtags",
+              "displayName": "threads_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_status",
+              "displayName": "threads_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_scheduled_at",
+              "displayName": "threads_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_published_at",
+              "displayName": "threads_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_error",
+              "displayName": "threads_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_text",
+              "displayName": "instagram_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_content_prompt",
+              "displayName": "instagram_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_image_prompt",
+              "displayName": "instagram_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_image_url",
+              "displayName": "instagram_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_hashtags",
+              "displayName": "instagram_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_status",
+              "displayName": "instagram_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_scheduled_at",
+              "displayName": "instagram_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_published_at",
+              "displayName": "instagram_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_error",
+              "displayName": "instagram_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_text",
+              "displayName": "facebook_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_content_prompt",
+              "displayName": "facebook_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_image_prompt",
+              "displayName": "facebook_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_image_url",
+              "displayName": "facebook_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_hashtags",
+              "displayName": "facebook_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_status",
+              "displayName": "facebook_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_scheduled_at",
+              "displayName": "facebook_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_published_at",
+              "displayName": "facebook_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_error",
+              "displayName": "facebook_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_text",
+              "displayName": "skool_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_content_prompt",
+              "displayName": "skool_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_image_prompt",
+              "displayName": "skool_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_image_url",
+              "displayName": "skool_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_hashtags",
+              "displayName": "skool_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_status",
+              "displayName": "skool_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_scheduled_at",
+              "displayName": "skool_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_published_at",
+              "displayName": "skool_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_error",
+              "displayName": "skool_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "7bee5a16-32b2-48b1-b1cf-d6d82cd614ea",
+      "name": "GS Update Multiple Platforms",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        960,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ujTRaPhtGjVV4RCC",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "{\"success\":true}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "be57a997-1b63-43a3-8450-437e7e9b7f9a",
+      "name": "Respond: UPDATE_MULTI",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;\nconst { postId, prompts } = $('Define Column Map').first().json.payload;\nconst updateObj = { 'post_id': postId };\nObject.entries(prompts).forEach(([platform, prompt]) => {\n  const cols = COLUMN_MAP[platform];\n  if (cols) updateObj[cols.contentPrompt] = prompt;\n});\nreturn [{ json: updateObj }];"
+      },
+      "id": "eb4c4ce6-ca68-4f60-8056-e00bc0dfb30b",
+      "name": "Build Content Prompts Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1168138355,
+          "mode": "list",
+          "cachedResultName": "Pulse-Repurpose-App",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI/edit#gid=1168138355"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "post_id"
+          ],
+          "schema": [
+            {
+              "id": "post_id",
+              "displayName": "post_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "linkedin_text",
+              "displayName": "linkedin_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "linkedin_image_url",
+              "displayName": "linkedin_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "posted_at",
+              "displayName": "posted_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_text",
+              "displayName": "twitter_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_content_prompt",
+              "displayName": "twitter_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_image_prompt",
+              "displayName": "twitter_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_image_url",
+              "displayName": "twitter_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_hashtags",
+              "displayName": "twitter_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_status",
+              "displayName": "twitter_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_scheduled_at",
+              "displayName": "twitter_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_published_at",
+              "displayName": "twitter_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_error",
+              "displayName": "twitter_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_text",
+              "displayName": "threads_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_content_prompt",
+              "displayName": "threads_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_image_prompt",
+              "displayName": "threads_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_image_url",
+              "displayName": "threads_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_hashtags",
+              "displayName": "threads_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_status",
+              "displayName": "threads_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_scheduled_at",
+              "displayName": "threads_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_published_at",
+              "displayName": "threads_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_error",
+              "displayName": "threads_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_text",
+              "displayName": "instagram_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_content_prompt",
+              "displayName": "instagram_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_image_prompt",
+              "displayName": "instagram_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_image_url",
+              "displayName": "instagram_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_hashtags",
+              "displayName": "instagram_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_status",
+              "displayName": "instagram_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_scheduled_at",
+              "displayName": "instagram_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_published_at",
+              "displayName": "instagram_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_error",
+              "displayName": "instagram_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_text",
+              "displayName": "facebook_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_content_prompt",
+              "displayName": "facebook_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_image_prompt",
+              "displayName": "facebook_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_image_url",
+              "displayName": "facebook_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_hashtags",
+              "displayName": "facebook_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_status",
+              "displayName": "facebook_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_scheduled_at",
+              "displayName": "facebook_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_published_at",
+              "displayName": "facebook_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_error",
+              "displayName": "facebook_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_text",
+              "displayName": "skool_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_content_prompt",
+              "displayName": "skool_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_image_prompt",
+              "displayName": "skool_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_image_url",
+              "displayName": "skool_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_hashtags",
+              "displayName": "skool_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_status",
+              "displayName": "skool_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_scheduled_at",
+              "displayName": "skool_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_published_at",
+              "displayName": "skool_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_error",
+              "displayName": "skool_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "b2cd5c72-b25d-4d24-8e2a-6033d99695b2",
+      "name": "GS Write Content Prompts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        960,
+        304
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ujTRaPhtGjVV4RCC",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "{\"success\":true}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "109022ca-fb22-4388-a9ce-d250929847a6",
+      "name": "Respond: WRITE_CONTENT_PROMPTS",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;\nconst { postId, prompts } = $('Define Column Map').first().json.payload;\nconst updateObj = { 'post_id': postId };\nObject.entries(prompts).forEach(([platform, prompt]) => {\n  const cols = COLUMN_MAP[platform];\n  if (cols) updateObj[cols.imagePrompt] = prompt;\n});\nreturn [{ json: updateObj }];"
+      },
+      "id": "40dc3721-89c9-4a5c-b8b9-a7fcf24ffa2b",
+      "name": "Build Image Prompts Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1168138355,
+          "mode": "list",
+          "cachedResultName": "Pulse-Repurpose-App",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI/edit#gid=1168138355"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "post_id"
+          ],
+          "schema": [
+            {
+              "id": "post_id",
+              "displayName": "post_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "linkedin_text",
+              "displayName": "linkedin_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "linkedin_image_url",
+              "displayName": "linkedin_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "posted_at",
+              "displayName": "posted_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_text",
+              "displayName": "twitter_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_content_prompt",
+              "displayName": "twitter_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_image_prompt",
+              "displayName": "twitter_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_image_url",
+              "displayName": "twitter_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_hashtags",
+              "displayName": "twitter_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_status",
+              "displayName": "twitter_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_scheduled_at",
+              "displayName": "twitter_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_published_at",
+              "displayName": "twitter_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_error",
+              "displayName": "twitter_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_text",
+              "displayName": "threads_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_content_prompt",
+              "displayName": "threads_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_image_prompt",
+              "displayName": "threads_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_image_url",
+              "displayName": "threads_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_hashtags",
+              "displayName": "threads_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_status",
+              "displayName": "threads_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_scheduled_at",
+              "displayName": "threads_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_published_at",
+              "displayName": "threads_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_error",
+              "displayName": "threads_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_text",
+              "displayName": "instagram_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_content_prompt",
+              "displayName": "instagram_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_image_prompt",
+              "displayName": "instagram_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_image_url",
+              "displayName": "instagram_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_hashtags",
+              "displayName": "instagram_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_status",
+              "displayName": "instagram_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_scheduled_at",
+              "displayName": "instagram_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_published_at",
+              "displayName": "instagram_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_error",
+              "displayName": "instagram_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_text",
+              "displayName": "facebook_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_content_prompt",
+              "displayName": "facebook_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_image_prompt",
+              "displayName": "facebook_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_image_url",
+              "displayName": "facebook_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_hashtags",
+              "displayName": "facebook_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_status",
+              "displayName": "facebook_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_scheduled_at",
+              "displayName": "facebook_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_published_at",
+              "displayName": "facebook_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_error",
+              "displayName": "facebook_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_text",
+              "displayName": "skool_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_content_prompt",
+              "displayName": "skool_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_image_prompt",
+              "displayName": "skool_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_image_url",
+              "displayName": "skool_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_hashtags",
+              "displayName": "skool_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_status",
+              "displayName": "skool_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_scheduled_at",
+              "displayName": "skool_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_published_at",
+              "displayName": "skool_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_error",
+              "displayName": "skool_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "286901e0-881a-44d5-9ff3-cc223e2f91a1",
+      "name": "GS Write Image Prompts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        960,
+        608
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ujTRaPhtGjVV4RCC",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "{\"success\":true}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "2a1ce0fe-a033-47d1-9fdc-0bc91f80c7a5",
+      "name": "Respond: WRITE_IMAGE_PROMPTS",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;\nconst { postId, platform, status, publishedAt, error } = $('Define Column Map').first().json.payload;\nconst cols = COLUMN_MAP[platform];\nconst updateObj = { 'post_id': postId, [cols.status]: status };\nif (publishedAt) updateObj[cols.publishedAt] = publishedAt;\nif (error) updateObj[cols.error] = error;\nreturn [{ json: updateObj }];"
+      },
+      "id": "9cfc3600-07e8-4691-9a2d-102f7627f136",
+      "name": "Build Status Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1168138355,
+          "mode": "list",
+          "cachedResultName": "Pulse-Repurpose-App",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI/edit#gid=1168138355"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "post_id"
+          ],
+          "schema": [
+            {
+              "id": "post_id",
+              "displayName": "post_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "linkedin_text",
+              "displayName": "linkedin_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "linkedin_image_url",
+              "displayName": "linkedin_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "posted_at",
+              "displayName": "posted_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_text",
+              "displayName": "twitter_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_content_prompt",
+              "displayName": "twitter_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_image_prompt",
+              "displayName": "twitter_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_image_url",
+              "displayName": "twitter_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_hashtags",
+              "displayName": "twitter_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_status",
+              "displayName": "twitter_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_scheduled_at",
+              "displayName": "twitter_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_published_at",
+              "displayName": "twitter_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "twitter_error",
+              "displayName": "twitter_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_text",
+              "displayName": "threads_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_content_prompt",
+              "displayName": "threads_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_image_prompt",
+              "displayName": "threads_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_image_url",
+              "displayName": "threads_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_hashtags",
+              "displayName": "threads_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_status",
+              "displayName": "threads_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_scheduled_at",
+              "displayName": "threads_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_published_at",
+              "displayName": "threads_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threads_error",
+              "displayName": "threads_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_text",
+              "displayName": "instagram_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_content_prompt",
+              "displayName": "instagram_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_image_prompt",
+              "displayName": "instagram_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_image_url",
+              "displayName": "instagram_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_hashtags",
+              "displayName": "instagram_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_status",
+              "displayName": "instagram_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_scheduled_at",
+              "displayName": "instagram_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_published_at",
+              "displayName": "instagram_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instagram_error",
+              "displayName": "instagram_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_text",
+              "displayName": "facebook_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_content_prompt",
+              "displayName": "facebook_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_image_prompt",
+              "displayName": "facebook_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_image_url",
+              "displayName": "facebook_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_hashtags",
+              "displayName": "facebook_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_status",
+              "displayName": "facebook_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_scheduled_at",
+              "displayName": "facebook_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_published_at",
+              "displayName": "facebook_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "facebook_error",
+              "displayName": "facebook_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_text",
+              "displayName": "skool_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_content_prompt",
+              "displayName": "skool_content_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_image_prompt",
+              "displayName": "skool_image_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_image_url",
+              "displayName": "skool_image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_hashtags",
+              "displayName": "skool_hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_status",
+              "displayName": "skool_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_scheduled_at",
+              "displayName": "skool_scheduled_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_published_at",
+              "displayName": "skool_published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skool_error",
+              "displayName": "skool_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "4f86af33-447a-4930-b2af-2b330abe8a78",
+      "name": "GS Update Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        960,
+        912
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ujTRaPhtGjVV4RCC",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "{\"success\":true}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "6d0dddd5-acac-4a97-a587-05bfbca85ab3",
+      "name": "Respond: UPDATE_STATUS",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        912
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "e96b9a98-9bc6-43d3-8077-0e69dcfa38a0",
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.message || 'Unknown error in Sheet Operations workflow' }) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "40e2ff6f-6b37-466f-86f0-a8ee3ed460ef",
+      "name": "Respond: Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 📊 UPDATE ANALYTICS\n\nWrites engagement metrics for one platform on one row.\n\n**PAYLOAD:**\n```\n{ postId, platform, metrics: { impressions, likes, comments, shares, engagementRate } }\n```\n\n**CALLED BY:** Workflow 4 (Analytics Fetch) after fetching platform metrics.\n\n**fetchedAt is always written** — ISO timestamp of when metrics were fetched.",
+        "height": 280,
+        "width": 380,
+        "color": 5
+      },
+      "id": "96c31e98-7091-4120-8a4a-943e4287fc77",
+      "name": "📊 UPDATE ANALYTICS",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        1056
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 💬 UPDATE FIRST COMMENT\n\nWrites first comment text and status for one platform on one row.\n\n**PAYLOAD:**\n```\n{ postId, platform, firstComment, firstCommentStatus }\n```\n\n**firstCommentStatus values:** pending | published | failed\n\n**CALLED BY:** Workflow 3 after posting (or failing to post) the first comment.",
+        "height": 280,
+        "width": 380,
+        "color": 6
+      },
+      "id": "5dde81e8-b712-454e-8946-cbec950b0e30",
+      "name": "💬 UPDATE FIRST COMMENT",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        1360
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;\nconst { postId, platform, metrics } = $('Define Column Map').first().json.payload;\nconst cols = COLUMN_MAP[platform];\nconst updateObj = { 'post_id': postId };\nif (metrics.impressions !== undefined)    updateObj[cols.impressions]    = metrics.impressions;\nif (metrics.likes !== undefined)          updateObj[cols.likes]          = metrics.likes;\nif (metrics.comments !== undefined)       updateObj[cols.comments]       = metrics.comments;\nif (metrics.shares !== undefined)         updateObj[cols.shares]         = metrics.shares;\nif (metrics.engagementRate !== undefined) updateObj[cols.engagementRate] = metrics.engagementRate;\nupdateObj[cols.fetchedAt] = new Date().toISOString();\nreturn [{ json: updateObj }];"
+      },
+      "id": "b6cd9228-ae03-4c26-a4be-2ae8d0ecb7b0",
+      "name": "Build Analytics Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        1216
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1168138355,
+          "mode": "list",
+          "cachedResultName": "Pulse-Repurpose-App",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI/edit#gid=1168138355"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "post_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "b11d0d16-4451-4ef8-882a-b273435a4c1f",
+      "name": "GS Update Analytics",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        960,
+        1216
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ujTRaPhtGjVV4RCC",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"success\":true}",
+        "options": {}
+      },
+      "id": "98771353-4282-4eca-9f70-6ef9e4d6eff2",
+      "name": "Respond: UPDATE_ANALYTICS",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        1216
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;\nconst { postId, platform, firstComment, firstCommentStatus } = $('Define Column Map').first().json.payload;\nconst cols = COLUMN_MAP[platform];\nconst updateObj = { 'post_id': postId };\nif (firstComment !== undefined)       updateObj[cols.firstComment]       = firstComment || '';\nif (firstCommentStatus !== undefined) updateObj[cols.firstCommentStatus] = firstCommentStatus;\nreturn [{ json: updateObj }];"
+      },
+      "id": "a7a9bc42-66b8-43d7-bf44-2658f48c2f05",
+      "name": "Build First Comment Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        1520
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1168138355,
+          "mode": "list",
+          "cachedResultName": "Pulse-Repurpose-App",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12Q3wWzebks29w7vKxZAlV-DLsaPJrH4VdSQvXAn7hCI/edit#gid=1168138355"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "post_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "55f38635-6bf5-46fc-b24a-b69a07a480d3",
+      "name": "GS Update First Comment",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        960,
+        1520
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ujTRaPhtGjVV4RCC",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"success\":true}",
+        "options": {}
+      },
+      "id": "3f470400-5833-4a53-a16c-55941a84165f",
+      "name": "Respond: UPDATE_FIRST_COMMENT",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        1520
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Define Column Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Define Column Map": {
+      "main": [
+        [
+          {
+            "node": "Route Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS Read All Rows": {
+      "main": [
+        [
+          {
+            "node": "Map Rows To Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Rows To Posts": {
+      "main": [
+        [
+          {
+            "node": "Respond: GET_ALL_POSTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS Read For Lookup": {
+      "main": [
+        [
+          {
+            "node": "Find Row By Post ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Row By Post ID": {
+      "main": [
+        [
+          {
+            "node": "Respond: GET_POST_BY_ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Single Variant Update": {
+      "main": [
+        [
+          {
+            "node": "GS Update Single Variant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS Update Single Variant": {
+      "main": [
+        [
+          {
+            "node": "Respond: UPDATE_VARIANT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Multi Platform Update": {
+      "main": [
+        [
+          {
+            "node": "GS Update Multiple Platforms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS Update Multiple Platforms": {
+      "main": [
+        [
+          {
+            "node": "Respond: UPDATE_MULTI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Content Prompts Update": {
+      "main": [
+        [
+          {
+            "node": "GS Write Content Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS Write Content Prompts": {
+      "main": [
+        [
+          {
+            "node": "Respond: WRITE_CONTENT_PROMPTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Image Prompts Update": {
+      "main": [
+        [
+          {
+            "node": "GS Write Image Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS Write Image Prompts": {
+      "main": [
+        [
+          {
+            "node": "Respond: WRITE_IMAGE_PROMPTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Status Update": {
+      "main": [
+        [
+          {
+            "node": "GS Update Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS Update Status": {
+      "main": [
+        [
+          {
+            "node": "Respond: UPDATE_STATUS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Action": {
+      "main": [
+        [
+          {
+            "node": "GS Read All Rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "GS Read For Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Single Variant Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Multi Platform Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Content Prompts Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Image Prompts Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Status Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Analytics Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build First Comment Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "On Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Respond: Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Analytics Update": {
+      "main": [
+        [
+          {
+            "node": "GS Update Analytics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS Update Analytics": {
+      "main": [
+        [
+          {
+            "node": "Respond: UPDATE_ANALYTICS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build First Comment Update": {
+      "main": [
+        [
+          {
+            "node": "GS Update First Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS Update First Comment": {
+      "main": [
+        [
+          {
+            "node": "Respond: UPDATE_FIRST_COMMENT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "executionTimeout": 3600,
+    "timezone": "UTC",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "meta": null
+}
