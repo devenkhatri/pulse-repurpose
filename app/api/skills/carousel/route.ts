@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
 import fs from "fs/promises"
 import path from "path"
-import { executePrompt } from "@/lib/anthropic"
+import { callLLMWebhook } from "@/lib/n8n"
 import { getBrandVoice } from "@/lib/brand-voice"
 import { cacheGetOrSet } from "@/lib/cache"
 import type { CarouselPromptOutput } from "@/types"
@@ -16,16 +16,6 @@ const RequestSchema = z.object({
   linkedinText: z.string().min(1),
 })
 
-// ---------------------------------------------------------------------------
-// Model chain — same fallback pattern as platform-skills.ts
-// ---------------------------------------------------------------------------
-
-const SKILL_MODEL_CHAIN: string[] = [
-  process.env.OPENROUTER_SKILL_MODEL ?? "stepfun/step-3.5-flash:free",
-  "nvidia/nemotron-3-super-120b-a12b:free",
-  "minimax/minimax-m2.5:free",
-  "liquid/lfm-2.5-1.2b-instruct:free",
-]
 
 const FILE_TTL_MS = 5 * 60 * 1000
 
@@ -74,28 +64,6 @@ function parseJsonResponse<T>(raw: string): T {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Model retry wrapper
-// ---------------------------------------------------------------------------
-
-async function withRetry<T>(fn: (model: string) => Promise<T>): Promise<T> {
-  let lastError: unknown
-  for (let i = 0; i < SKILL_MODEL_CHAIN.length; i++) {
-    const model = SKILL_MODEL_CHAIN[i]!
-    try {
-      return await fn(model)
-    } catch (err) {
-      lastError = err
-      const msg = err instanceof Error ? err.message : String(err)
-      const is404 = msg.includes("404") || msg.includes("No endpoints found")
-      if (is404 && i < SKILL_MODEL_CHAIN.length - 1) continue
-      if (i < SKILL_MODEL_CHAIN.length - 1) {
-        await new Promise((r) => setTimeout(r, 1000))
-      }
-    }
-  }
-  throw lastError
-}
 
 // ---------------------------------------------------------------------------
 // GET — health/info
@@ -169,9 +137,13 @@ With these inputs:
 
 Return the structured CarouselPromptOutput object as specified in the skill file.`
 
-    const raw = await withRetry((model) =>
-      executePrompt({ system, user, maxTokens: 4096, model })
-    )
+    const raw = await callLLMWebhook({
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      maxTokens: 4096,
+    })
 
     const carousel = parseJsonResponse<CarouselPromptOutput>(raw)
 

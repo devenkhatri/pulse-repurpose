@@ -5,28 +5,20 @@
  * Called by /api/skills/platform-prompt (per-platform) and
  * /api/trigger/repurpose + /api/trigger/images (bulk parallel).
  *
- * Reads the skill .md file from skills/platforms/, calls OpenRouter to
- * produce structured JSON output, and returns typed ContentPromptOutput
+ * Reads the skill .md file from skills/platforms/, calls the n8n LLM webhook
+ * to produce structured JSON output, and returns typed ContentPromptOutput
  * or ImagePromptOutput.
  */
 
 import fs from "fs/promises"
 import path from "path"
-import { executePrompt } from "@/lib/anthropic"
+import { callLLMWebhook } from "@/lib/n8n"
 import { getBrandVoice } from "@/lib/brand-voice"
 import { cacheGetOrSet } from "@/lib/cache"
 
 const FILE_TTL_MS = 5 * 60 * 1000
 
-// Models tried in order for skill execution. All have 32k–262k output token capacity.
-// Primary can be overridden via OPENROUTER_SKILL_MODEL env var.
-// Fallbacks are tried automatically on 404 (model removed/unavailable).
-const SKILL_MODEL_CHAIN: string[] = [
-  process.env.OPENROUTER_SKILL_MODEL ?? "stepfun/step-3.5-flash:free",
-  "nvidia/nemotron-3-super-120b-a12b:free",
-  "minimax/minimax-m2.5:free",
-  "liquid/lfm-2.5-1.2b-instruct:free",
-]
+
 import type {
   Platform,
   ContentPromptOutput,
@@ -184,42 +176,6 @@ function parseJsonResponse<T>(raw: string): T {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: Retry wrapper for transient failures
-// ---------------------------------------------------------------------------
-
-async function withRetry<T>(
-  fn: (model: string) => Promise<T>,
-  options: { delayMs: number } = { delayMs: 1000 }
-): Promise<T> {
-  let lastError: Error | unknown
-
-  for (let i = 0; i < SKILL_MODEL_CHAIN.length; i++) {
-    const model = SKILL_MODEL_CHAIN[i]!
-    try {
-      return await fn(model)
-    } catch (error) {
-      lastError = error
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      const is404 = errorMessage.includes("404") || errorMessage.includes("No endpoints found")
-
-      if (is404 && i < SKILL_MODEL_CHAIN.length - 1) {
-        console.warn(`[platform-skills] Model ${model} unavailable (404), trying next fallback`)
-        continue
-      }
-
-      if (i < SKILL_MODEL_CHAIN.length - 1) {
-        console.warn(
-          `[platform-skills] Model ${model} failed, retrying with next in ${options.delayMs}ms:`,
-          errorMessage
-        )
-        await new Promise((resolve) => setTimeout(resolve, options.delayMs))
-      }
-    }
-  }
-
-  throw lastError
-}
 
 // ---------------------------------------------------------------------------
 // executePlatformContentSkill
@@ -256,7 +212,13 @@ With these inputs:
 
 Return the structured ContentPromptOutput object as specified in the skill file.`
 
-  const raw = await withRetry((model) => executePrompt({ system, user, maxTokens: 4096, model }))
+  const raw = await callLLMWebhook({
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    maxTokens: 4096,
+  })
   return parseJsonResponse<ContentPromptOutput>(raw)
 }
 
@@ -297,6 +259,12 @@ With these inputs:
 
 Return the structured ImagePromptOutput object as specified in the skill file.`
 
-  const raw = await withRetry((model) => executePrompt({ system, user, maxTokens: 4096, model }))
+  const raw = await callLLMWebhook({
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    maxTokens: 4096,
+  })
   return parseJsonResponse<ImagePromptOutput>(raw)
 }

@@ -1,0 +1,244 @@
+{
+  "name": "Pulse - LLM Proxy",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 🤖 Pulse — LLM Proxy  (Workflow 4)\n\nSynchronous OpenRouter proxy used by the Pulse app for **interactive / on-demand LLM calls** that need an immediate response:\n\n- AI chat sidebar edits (`POST /api/chat`)\n- Hashtag suggestions (`POST /api/hashtags`)\n- Platform content skill execution (`lib/platform-skills.ts`)\n- Carousel skill execution (`POST /api/skills/carousel`)\n\n**Webhook path:** `pulse-llm`  |  **Method:** POST  |  **Response:** synchronous (responds directly to the caller)\n\n**Input payload:** `{ messages: [{role, content}], maxTokens?: number, model?: string }`\n\n**Output:** `{ content: string }` — the raw LLM response text",
+        "height": 368,
+        "width": 776,
+        "color": 0
+      },
+      "id": "ba78dfba-60f5-4c59-bf2c-3d3695c6bb4f",
+      "name": "Sticky Note — Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        176,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⚙️ Setup — Do This First\n\n**Step 1 — OpenRouter credential**\nCreate (or reuse) an **OpenAI API** credential:\n- Name: `OpenRouter API Key`\n- API Key: your OpenRouter key\n- Base URL: `https://openrouter.ai/api/v1`\n\nOpen the `OpenRouter Chat Model` sub-node → Credential → select it.\n\n**Step 2 — Activate**\nToggle the workflow ON after setting the credential.",
+        "height": 332,
+        "width": 360,
+        "color": 3
+      },
+      "id": "191f9e0c-9ea0-46fa-9616-98f1857e799b",
+      "name": "Sticky Note — Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        192,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 📨 Prepare Messages\n\nExtracts `systemPrompt` and `userPrompt` from the incoming `messages` array.\n\nFor multi-turn chat history the prior turns are serialised into the user prompt so the AI Agent receives a single human message with full context.",
+        "height": 224,
+        "width": 360,
+        "color": 4
+      },
+      "id": "37e8add4-e488-4fc6-abc8-88c8783fc30f",
+      "name": "Sticky Note — Prepare",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        800,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🤖 AI Agent + OpenRouter\n\nRuns the user prompt through OpenRouter using the same LangChain AI Agent pattern as Workflow 1.\n\nModel and maxTokens are pulled dynamically from the webhook body — the app's model fallback chain (`SKILL_MODEL_CHAIN`) passes a different model on each retry.",
+        "height": 240,
+        "width": 408,
+        "color": 4
+      },
+      "id": "a5892b25-3568-40ed-8678-81a73048d382",
+      "name": "Sticky Note — Agent",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1344,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pulse-llm",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c401c1c2-1da1-4800-89b1-d6967a7df9bb",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        624,
+        768
+      ],
+      "webhookId": "pulse-llm-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst messages = body.messages || [];\n\n// Extract system message\nconst systemMsg = messages.find(m => m.role === 'system');\nconst systemPrompt = systemMsg ? systemMsg.content : '';\n\n// Build user prompt from non-system messages\nconst nonSystem = messages.filter(m => m.role !== 'system');\nlet userPrompt = '';\n\nif (nonSystem.length === 1) {\n  userPrompt = nonSystem[0].content;\n} else if (nonSystem.length > 1) {\n  const history = nonSystem.slice(0, -1).map(m =>\n    `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`\n  );\n  const last = nonSystem[nonSystem.length - 1];\n  userPrompt = `Previous conversation:\\n${history.join('\\n')}\\n\\nCurrent instruction: ${last?.content || ''}`;\n}\n\nif (!userPrompt) {\n  throw new Error('No user message found in messages array');\n}\n\nreturn [{ json: { systemPrompt, userPrompt } }];\n"
+      },
+      "id": "154d3b48-a210-49db-b7e6-a415e757faa7",
+      "name": "Code - Prepare Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        848,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userPrompt }}",
+        "options": {
+          "systemMessage": "={{ $json.systemPrompt }}"
+        }
+      },
+      "id": "2860f4c1-255a-4bfe-9d05-8a209db3e496",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        992,
+        768
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = $input.first().json?.output;\nif (!output) {\n  throw new Error('AI Agent returned empty output');\n}\nreturn [{ json: { content: output } }];\n"
+      },
+      "id": "41db9338-9d92-4b32-94b0-177043202dd5",
+      "name": "Code - Extract Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "c666d163-0552-4db6-8a6e-82ee270f3291",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1536,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "model": "openrouter/free",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        864,
+        976
+      ],
+      "id": "59590384-56d4-4e8f-9cb2-771680163b19",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "kdkLbS2Y0WBkWCrL",
+          "name": "OpenRouter dg-account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code - Prepare Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Prepare Messages": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Code - Extract Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Extract Content": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "d2f3db45-c318-4eb5-ae75-baf1ca7ffab1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5112a5ff13f41a8d605b5aeac947e15fc8e5070011cb0ffcac8f2afa1cc948a9"
+  },
+  "id": "8iPPC3McZol84doedd8lM",
+  "tags": [
+    {
+      "updatedAt": "2026-03-22T12:13:44.659Z",
+      "createdAt": "2026-03-22T12:13:44.659Z",
+      "id": "B4TQmEgyNeGfod4D",
+      "name": "pulse"
+    }
+  ]
+}

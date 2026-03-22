@@ -73,19 +73,15 @@ export async function POST(req: NextRequest) {
     // 2. Write _source.md (idempotent — won't overwrite if already exists)
     await writeSourceFile(post).catch(() => {})
 
-    // 3. Execute content platform skills — staggered to avoid free-tier rate limits
+    // 3. Execute content platform skills in parallel
     console.log(`[trigger/repurpose] Running skills for platforms: ${targetPlatforms.join(", ")}`)
     const skillResults = await Promise.allSettled(
-      targetPlatforms.map((platform, i) =>
-        new Promise<void>((resolve) => setTimeout(resolve, i * 500))
-          .then(() =>
-            executePlatformContentSkill({
-              postId,
-              platform,
-              linkedinText: post.linkedinText,
-            })
-          )
-          .then((output) => ({ platform, output }))
+      targetPlatforms.map((platform) =>
+        executePlatformContentSkill({
+          postId,
+          platform,
+          linkedinText: post.linkedinText,
+        }).then((output) => ({ platform, output }))
       )
     )
 

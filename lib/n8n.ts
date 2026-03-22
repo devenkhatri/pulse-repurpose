@@ -106,6 +106,40 @@ export async function fireImageRepurposeWebhook(params: {
 }
 
 // ---------------------------------------------------------------------------
+// callLLMWebhook
+// POST to N8N_LLM_WEBHOOK_URL — synchronous LLM proxy via workflow-4.
+// ---------------------------------------------------------------------------
+
+export async function callLLMWebhook(params: {
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
+  maxTokens?: number
+  model?: string
+}): Promise<string> {
+  const url = env.N8N_LLM_WEBHOOK_URL
+
+  if (!url) {
+    throw new Error("N8N_LLM_WEBHOOK_URL is not configured")
+  }
+
+  const response = await axios.post<{ content: string }>(
+    url,
+    {
+      messages: params.messages,
+      maxTokens: params.maxTokens ?? 1024,
+      model: params.model,
+    },
+    { timeout: 60000 }
+  )
+
+  const content = response.data?.content
+  if (!content) {
+    throw new Error("Empty response from LLM webhook")
+  }
+
+  return content
+}
+
+// ---------------------------------------------------------------------------
 // firePublishWebhook
 // POST to N8N_PUBLISH_WEBHOOK_URL — 10s timeout
 // ---------------------------------------------------------------------------
