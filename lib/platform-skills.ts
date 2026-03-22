@@ -17,6 +17,13 @@ import { getBrandVoice } from "@/lib/brand-voice"
 import { cacheGetOrSet } from "@/lib/cache"
 
 const FILE_TTL_MS = 5 * 60 * 1000
+
+// Model used for skill execution (content repurposing). These tasks require
+// long JSON output — free models with small context windows truncate mid-JSON.
+// Override via OPENROUTER_SKILL_MODEL. Defaults to gemini-flash which handles
+// 8k+ output tokens on the free tier reliably.
+const SKILL_MODEL =
+  process.env.OPENROUTER_SKILL_MODEL ?? "google/gemini-2.0-flash-exp:free"
 import type {
   Platform,
   ContentPromptOutput,
@@ -190,12 +197,9 @@ async function withRetry<T>(
     } catch (error) {
       lastError = error
 
-      // Don't retry on parse errors — malformed LLM output won't improve on retry
+      // Retry on all errors — parse failures from truncated output (finish_reason: length)
+      // can succeed on a retry with the correct model (SKILL_MODEL).
       const errorMessage = error instanceof Error ? error.message : String(error)
-      if (errorMessage.includes("Failed to parse JSON")) {
-        throw error
-      }
-      // Empty responses ARE retried — they're transient (rate limits, free-tier throttling)
 
       // Only retry on transient errors (network, provider issues)
       if (attempt < options.maxRetries) {
@@ -246,7 +250,7 @@ With these inputs:
 
 Return the structured ContentPromptOutput object as specified in the skill file.`
 
-  const raw = await withRetry(() => executePrompt({ system, user, maxTokens: 4096 }))
+  const raw = await withRetry(() => executePrompt({ system, user, maxTokens: 4096, model: SKILL_MODEL }))
   return parseJsonResponse<ContentPromptOutput>(raw)
 }
 
@@ -287,6 +291,6 @@ With these inputs:
 
 Return the structured ImagePromptOutput object as specified in the skill file.`
 
-  const raw = await withRetry(() => executePrompt({ system, user, maxTokens: 4096 }))
+  const raw = await withRetry(() => executePrompt({ system, user, maxTokens: 4096, model: SKILL_MODEL }))
   return parseJsonResponse<ImagePromptOutput>(raw)
 }

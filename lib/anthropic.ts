@@ -27,6 +27,7 @@ export async function executePrompt(params: {
   system: string
   user: string
   maxTokens?: number
+  model?: string
 }): Promise<string> {
   return callOpenRouter({
     messages: [
@@ -34,6 +35,7 @@ export async function executePrompt(params: {
       { role: "user", content: params.user },
     ],
     maxTokens: params.maxTokens ?? 2048,
+    model: params.model,
   })
 }
 
@@ -54,6 +56,7 @@ interface ORMessage {
 async function callOpenRouter(params: {
   messages: ORMessage[]
   maxTokens?: number
+  model?: string
 }): Promise<string> {
   const apiKey = env.OPENROUTER_API_KEY
   if (!apiKey) {
@@ -69,7 +72,7 @@ async function callOpenRouter(params: {
       "X-Title": "Pulse Repurpose",
     },
     body: JSON.stringify({
-      model: MODEL,
+      model: params.model ?? MODEL,
       messages: params.messages,
       max_tokens: params.maxTokens ?? 1024,
     }),
