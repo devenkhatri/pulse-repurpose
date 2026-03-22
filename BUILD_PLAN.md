@@ -128,25 +128,59 @@ Each session is self-contained and can be built independently after Session 11.
 ### Session 12 — Analytics Integration
 Pull real engagement metrics from published platforms via n8n and feed them back into the learning system.
 
-- **Google Sheet schema**: Add `[platform]_impressions`, `_likes`, `_comments`, `_shares`, `_engagement_rate`, `_fetched_at` columns per platform
-- **n8n Workflow 4**: Scheduled analytics fetch — calls platform APIs (Twitter, Instagram, Facebook) → writes to Sheet via `UPDATE_ANALYTICS` action
-- **New Sheet action**: `UPDATE_ANALYTICS` in `lib/n8n-sheet.ts`
+**App changes:**
+- **Google Sheet schema**: Add `[platform]_platform_post_id` + analytics columns (`_impressions`, `_likes`, `_comments`, `_shares`, `_engagement_rate`, `_fetched_at`) per platform — 37 new columns total (AX–CA range)
+- **`PlatformVariant` type**: Add `platformPostId: string | null` field
+- **New Sheet actions**: `UPDATE_ANALYTICS` + `updateAnalytics()` helper in `lib/n8n-sheet.ts`
 - **`lib/analytics.ts`**: `getTopPerformingPosts`, `getBestPostingTimes`, `getPlatformSummary`
-- **`/analytics` page**: Per-platform stats bar, top posts table sorted by engagement rate, best time to post recommendation, empty state
+- **`/analytics` page**: Per-platform stats bar, top posts table sorted by engagement rate, best time to post, empty state
 - **Dashboard stats bar**: Add "Avg engagement rate" + "Top platform" stats
-- **`POST /api/trigger/analytics`**: Manual trigger for analytics fetch
-- **`POST /api/callback/analytics`**: n8n calls this after metrics are written to Sheet
-- **Cron Operation 9**: Post-fetch learning — high-performing posts → learnings.md content performance section; low performers → patterns to avoid. Closes the performance → learning feedback loop.
+- **`POST /api/trigger/analytics`**: Manual trigger → fires Workflow 4 webhook
+- **`POST /api/callback/analytics`**: n8n calls after metrics written → triggers cron learning update
+- **Cron Operation 9**: High-performing posts → `learnings.md` content performance section; low performers → patterns to avoid. Closes the performance → learning feedback loop.
+
+**n8n Workflow 0 changes:**
+- Update "Define Column Map" Code node — add `platformPostId`, analytics, and firstComment fields to COLUMN_MAP (full updated map in master plan)
+- Add `UPDATE_ANALYTICS` branch (Switch output 7): Code → GS Update → Respond
+- Update sticky notes to reflect 9 total actions
+
+**n8n Workflow 3 changes (run before Session 12 analytics work):**
+- After each platform publish API call succeeds: extract platform-native post ID from response
+- Write `platformPostId` back to Sheet via `UPDATE_PLATFORM_VARIANT` action
+- This is required by Workflow 4 to call platform metrics APIs
+
+**New n8n Workflow 4 — Analytics Fetch:**
+- Dual trigger: Schedule node (daily 06:00) + Webhook node (manual, `POST /api/trigger/analytics`)
+- Step 1: Get all `published` posts from Sheet → filter last 30 days
+- Step 2: Split by platform, skip Skool (no public API)
+- Step 3: Switch by platform → Twitter v2 API / Instagram Insights / Facebook Page Insights / Threads Insights
+- Step 4: Parse metrics, calculate `engagementRate = (likes+comments+shares) / impressions * 100`
+- Step 5: Write via `UPDATE_ANALYTICS` per post/platform
+- Step 6: Callback to `/api/callback/analytics` with `{ fetched, failed, timestamp }`
+- New credentials: "Twitter - Pulse" (Bearer Token), "Meta - Pulse" (Facebook App), "Threads - Pulse"
+- New env var: `N8N_ANALYTICS_WEBHOOK_URL` → add to `.env.local`
 
 ### Session 13 — First Comment Scheduling
 Schedule the first comment alongside a post (critical for LinkedIn hashtag/link strategy).
 
-- **Type update**: Add `firstComment: string | null` and `firstCommentScheduledAt: string | null` to `PlatformVariant`
-- **Sheet schema**: Add `[platform]_first_comment` and `[platform]_first_comment_status` columns
-- **n8n Workflow 3 update**: After posting, if `firstComment` present → wait 30s → post as comment → update Sheet status
+**App changes:**
+- **Type update**: Add `firstComment: string | null` and `firstCommentStatus: string | null` to `PlatformVariant`
+- **Sheet schema**: Add `[platform]_first_comment` and `[platform]_first_comment_status` columns (CB–CK, 10 columns)
+- **`updateFirstComment()` helper** in `lib/n8n-sheet.ts` (calls `UPDATE_FIRST_COMMENT` action)
 - **Repurpose page**: First comment textarea per platform card (collapsible "+ Add first comment"), pre-filled for LinkedIn with hashtag bank tags + any links from post
 - Platform defaults: LinkedIn (show + pre-fill), Twitter/Instagram (hidden), Facebook/Skool (shown, optional)
-- **Settings update**: Add first comment toggle to platform rules
+- **Publish API update**: Include `firstComment` field in `PublishWebhookPayload`
+
+**n8n Workflow 0 changes:**
+- Add `UPDATE_FIRST_COMMENT` branch (Switch output 8): Code → GS Update → Respond
+- COLUMN_MAP already updated in Session 12 (firstComment + firstCommentStatus columns)
+
+**n8n Workflow 3 changes:**
+- After publish success: IF node "Has First Comment" checks `payload.firstComment`
+- True branch: Wait 30s → "Post First Comment" HTTP Request per platform (Twitter reply, Instagram/Facebook comment, Threads reply)
+- Write `firstCommentStatus: published | failed` to Sheet via `UPDATE_FIRST_COMMENT` action
+- Comment failure must NOT affect main post status — handle independently with Continue on Fail
+- Update Workflow 3 sticky notes to document first comment flow
 
 ### Session 14 — Bulk Repurpose
 Select multiple dashboard rows and repurpose all in one action.

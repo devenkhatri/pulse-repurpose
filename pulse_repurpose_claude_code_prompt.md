@@ -4831,6 +4831,590 @@ This ensures every fal.ai generation reflects the user's visual identity, not ju
 
 ---
 
+## n8n Workflow Updates for Phase 2
+
+These are the changes required to the existing 4 workflows plus the spec for new Workflow 4 (Analytics). Apply these using the n8n MCP server after building the Phase 2 app sessions.
+
+---
+
+### Workflow 0 Updates — Sheet Operations
+
+**Why it changes**: Two new Phase 2 features (analytics, first comment) write new columns. The Switch router needs 2 new branches, and the Column Map needs new fields.
+
+#### New Google Sheet columns
+
+Add these columns to the "Posts" sheet, appended after column AW:
+
+```
+Analytics columns (per platform — 6 cols each, 30 new cols total):
+Column AX: twitter_impressions
+Column AY: twitter_likes
+Column AZ: twitter_comments
+Column BA: twitter_shares
+Column BB: twitter_engagement_rate
+Column BC: twitter_fetched_at
+
+Column BD: threads_impressions
+Column BE: threads_likes
+Column BF: threads_comments
+Column BG: threads_shares
+Column BH: threads_engagement_rate
+Column BI: threads_fetched_at
+
+Column BJ: instagram_impressions
+Column BK: instagram_likes
+Column BL: instagram_comments
+Column BM: instagram_shares
+Column BN: instagram_engagement_rate
+Column BO: instagram_fetched_at
+
+Column BP: facebook_impressions
+Column BQ: facebook_likes
+Column BR: facebook_comments
+Column BS: facebook_shares
+Column BT: facebook_engagement_rate
+Column BU: facebook_fetched_at
+
+Column BV: skool_impressions
+Column BW: skool_likes
+Column BX: skool_comments
+Column BY: skool_shares
+Column BZ: skool_engagement_rate
+Column CA: skool_fetched_at
+
+First comment columns (per platform — 2 cols each, 10 new cols total):
+Column CB: twitter_first_comment
+Column CC: twitter_first_comment_status
+Column CD: threads_first_comment
+Column CE: threads_first_comment_status
+Column CF: instagram_first_comment
+Column CG: instagram_first_comment_status
+Column CH: facebook_first_comment
+Column CI: facebook_first_comment_status
+Column CJ: skool_first_comment
+Column CK: skool_first_comment_status
+```
+
+#### Updated COLUMN_MAP (replace in "Define Column Map" Code node)
+
+```javascript
+const COLUMN_MAP = {
+  twitter:   {
+    text:'E', contentPrompt:'F', imagePrompt:'G', imageUrl:'H', hashtags:'I',
+    status:'J', scheduledAt:'K', publishedAt:'L', error:'M',
+    impressions:'AX', likes:'AY', comments:'AZ', shares:'BA', engagementRate:'BB', fetchedAt:'BC',
+    firstComment:'CB', firstCommentStatus:'CC',
+  },
+  threads:   {
+    text:'N', contentPrompt:'O', imagePrompt:'P', imageUrl:'Q', hashtags:'R',
+    status:'S', scheduledAt:'T', publishedAt:'U', error:'V',
+    impressions:'BD', likes:'BE', comments:'BF', shares:'BG', engagementRate:'BH', fetchedAt:'BI',
+    firstComment:'CD', firstCommentStatus:'CE',
+  },
+  instagram: {
+    text:'W', contentPrompt:'X', imagePrompt:'Y', imageUrl:'Z', hashtags:'AA',
+    status:'AB', scheduledAt:'AC', publishedAt:'AD', error:'AE',
+    impressions:'BJ', likes:'BK', comments:'BL', shares:'BM', engagementRate:'BN', fetchedAt:'BO',
+    firstComment:'CF', firstCommentStatus:'CG',
+  },
+  facebook:  {
+    text:'AF', contentPrompt:'AG', imagePrompt:'AH', imageUrl:'AI', hashtags:'AJ',
+    status:'AK', scheduledAt:'AL', publishedAt:'AM', error:'AN',
+    impressions:'BP', likes:'BQ', comments:'BR', shares:'BS', engagementRate:'BT', fetchedAt:'BU',
+    firstComment:'CH', firstCommentStatus:'CI',
+  },
+  skool:     {
+    text:'AO', contentPrompt:'AP', imagePrompt:'AQ', imageUrl:'AR', hashtags:'AS',
+    status:'AT', scheduledAt:'AU', publishedAt:'AV', error:'AW',
+    impressions:'BV', likes:'BW', comments:'BX', shares:'BY', engagementRate:'BZ', fetchedAt:'CA',
+    firstComment:'CJ', firstCommentStatus:'CK',
+  },
+};
+```
+
+#### New Switch outputs (add to existing Switch node)
+
+```
+Output 7 → UPDATE_ANALYTICS
+Output 8 → UPDATE_FIRST_COMMENT
+```
+
+Update Switch sticky note to show total 9 actions.
+
+#### New Branch 7 — UPDATE_ANALYTICS
+
+Code node "Build Analytics Update":
+```javascript
+const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
+const { postId, platform, metrics } = $('Define Column Map').first().json.payload;
+const cols = COLUMN_MAP[platform];
+const updateObj = { 'post_id': postId };
+if (metrics.impressions !== undefined) updateObj[cols.impressions] = metrics.impressions;
+if (metrics.likes !== undefined)       updateObj[cols.likes] = metrics.likes;
+if (metrics.comments !== undefined)    updateObj[cols.comments] = metrics.comments;
+if (metrics.shares !== undefined)      updateObj[cols.shares] = metrics.shares;
+if (metrics.engagementRate !== undefined) updateObj[cols.engagementRate] = metrics.engagementRate;
+updateObj[cols.fetchedAt] = new Date().toISOString();
+return [{ json: updateObj }];
+```
+
+→ Google Sheets node "GS Update Analytics":
+- Operation: Update, Sheet: Posts, Matching Column: post_id
+
+→ Respond to Webhook "Respond: UPDATE_ANALYTICS": `{"success":true}`
+
+#### New Branch 8 — UPDATE_FIRST_COMMENT
+
+Code node "Build First Comment Update":
+```javascript
+const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
+const { postId, platform, firstComment, firstCommentStatus } = $('Define Column Map').first().json.payload;
+const cols = COLUMN_MAP[platform];
+const updateObj = { 'post_id': postId };
+if (firstComment !== undefined)       updateObj[cols.firstComment] = firstComment || '';
+if (firstCommentStatus !== undefined) updateObj[cols.firstCommentStatus] = firstCommentStatus;
+return [{ json: updateObj }];
+```
+
+→ Google Sheets node "GS Update First Comment":
+- Operation: Update, Sheet: Posts, Matching Column: post_id
+
+→ Respond to Webhook "Respond: UPDATE_FIRST_COMMENT": `{"success":true}`
+
+#### New app-side lib/n8n-sheet.ts functions
+
+```typescript
+export async function updateAnalytics(
+  postId: string,
+  platform: Platform,
+  metrics: { impressions: number; likes: number; comments: number; shares: number; engagementRate: number }
+): Promise<void>
+
+export async function updateFirstComment(
+  postId: string,
+  platform: Platform,
+  firstComment: string,
+  firstCommentStatus: 'pending' | 'published' | 'failed'
+): Promise<void>
+```
+
+---
+
+### Workflow 1 — No Changes Required
+
+Hook variants are generated by the app's platform skill executor (LLM call inside the app before the webhook fires). n8n receives the pre-built `systemPrompt`+`userPrompt` and calls Claude — the result is still `{ text, hashtags, format }`. Hook variants live in the app's `ContentPromptOutput` object and are written to the content `.md` file, not to the Sheet. **Workflow 1 is unchanged.**
+
+---
+
+### Workflow 2 — No Changes Required
+
+Image brand kit constraints (`primaryColor`, `visualStyle`, `photographyStyle`, etc.) are injected into the `prompt` string by the app's image skill files before the webhook fires. n8n receives a fully-formed prompt string and passes it directly to fal.ai. **Workflow 2 is unchanged.**
+
+---
+
+### Workflow 3 Updates — Publish
+
+**Why it changes**: First comment must be posted ~30 seconds after the main post publishes, using the platform's comment API endpoint.
+
+#### Updated payload
+
+```typescript
+export interface PublishWebhookPayload {
+  platform: Platform
+  text: string
+  imageUrl: string | null
+  hashtags: string[]
+  scheduledAt: string | null
+  sheetRowId: string
+  postId: string
+  firstComment: string | null   // NEW — null means no first comment to post
+}
+```
+
+#### New nodes (add after the publish success branch, before Sheet status update)
+
+After each platform branch successfully publishes, add:
+
+**IF node "Has First Comment"** (connected after publish success):
+- Condition: `{{ $json.firstComment }}` is not empty
+
+→ **True branch:**
+
+**Wait node "Wait 30s Before Comment"**:
+- Wait For: 30 seconds
+- (Gives platform API time to register the new post)
+
+**HTTP Request node "Post First Comment"** (platform-specific):
+- Twitter/X: `POST https://api.twitter.com/2/tweets` with `{ "text": firstComment, "reply": { "in_reply_to_tweet_id": publishedPostId } }`
+- Instagram: `POST https://graph.facebook.com/v19.0/{media_id}/comments` with `{ "message": firstComment }`
+- Facebook: `POST https://graph.facebook.com/v19.0/{post_id}/comments` with `{ "message": firstComment }`
+- Threads: `POST https://graph.threads.net/v1.0/me/threads` (reply)
+- Skool: No comment API — skip (IF condition won't match as Skool has no firstComment)
+- Continue on Fail: true (comment failure must NOT block status update)
+
+**HTTP Request node "Update First Comment Status in Sheet"**:
+```json
+{
+  "action": "UPDATE_FIRST_COMMENT",
+  "payload": {
+    "postId": "={{ $json.postId }}",
+    "platform": "={{ $json.platform }}",
+    "firstComment": "={{ $json.firstComment }}",
+    "firstCommentStatus": "published"
+  }
+}
+```
+URL: `={{ $vars.N8N_SHEET_WEBHOOK_URL }}`
+
+→ **False branch (no first comment)**: Skip directly to Sheet status update.
+
+**Error handler addition**: If "Post First Comment" fails → update Sheet `firstCommentStatus` to `failed` (do not mark main post as failed — it published successfully).
+
+#### Updated Sticky Note 1 (Workflow 3 overview)
+
+Add to PURPOSE section:
+```
+FIRST COMMENT SUPPORT (Phase 2):
+If payload.firstComment is non-null:
+  1. After successful publish, wait 30 seconds
+  2. Call platform comment API with firstComment text
+  3. Update Sheet [platform]_first_comment_status = published|failed
+  Comment failure does NOT affect main post status — handle independently.
+```
+
+---
+
+### Workflow 4 — Analytics Fetch (New)
+
+```
+Using the n8n MCP server tools, create a new n8n workflow with the following exact specification. Name the workflow "Pulse - Analytics Fetch".
+
+═══════════════════════════════════════
+STICKY NOTES
+═══════════════════════════════════════
+
+STICKY NOTE 1 — top of canvas, named "📋 WORKFLOW OVERVIEW":
+PULSE - ANALYTICS FETCH (Workflow 4)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PURPOSE:
+Fetches real engagement metrics from published platform posts and writes
+them back to Google Sheet. Called daily via Schedule trigger or manually
+via POST /api/trigger/analytics. Feeds real data into the AOS learning
+loop so the AI improves based on actual performance, not just approvals.
+
+TRIGGERS: Two triggers run this same flow:
+  1. Schedule trigger — daily at 06:00 (configurable)
+  2. Webhook trigger — POST for manual trigger from app
+
+INPUTS (webhook mode):
+  { "postIds"?: string[], "platforms"?: string[], "callbackUrl"?: string }
+  If postIds omitted: fetch metrics for ALL published posts.
+
+OUTPUTS:
+  - Writes analytics columns to Sheet via Workflow 0 UPDATE_ANALYTICS action
+  - Calls app callback POST /api/callback/analytics with results summary
+  - Logs fetch timestamp per post/platform to Sheet
+
+CREDENTIALS REQUIRED:
+  - Twitter/X: "Twitter - Pulse" (OAuth2 / API v2 Bearer Token)
+  - Instagram/Facebook: "Meta - Pulse" (Facebook App + access tokens)
+  - Threads: "Threads - Pulse" (Meta Threads API access token)
+  - Skool: No public engagement API — skip impressions, use published count only
+  - N8N_SHEET_WEBHOOK_URL (workflow variable = Workflow 0 URL)
+  - N8N_APP_CALLBACK_URL (workflow variable = app base URL + /api/callback/analytics)
+
+FLOW:
+Trigger(s) → Get Published Posts → Split by Platform →
+Call Platform API → Parse Metrics → Write to Sheet → Callback
+
+LIMITATIONS:
+  - Twitter free tier: 500k API reads/month. Fetch daily, not per-post on-demand.
+  - Instagram: Business/Creator account required for Insights API.
+  - Facebook: Page API for Pages; personal profiles have no public insights API.
+  - Skool: No engagement API — omit metrics for Skool posts.
+
+STICKY NOTE 2 — named "⏰ SCHEDULE TRIGGER":
+Runs at 06:00 daily. Fetches metrics for all posts published in last 30 days.
+Older posts are unlikely to get new engagement — skip them for efficiency.
+Configure timezone to match user's local timezone.
+
+STICKY NOTE 3 — named "⚡ WEBHOOK TRIGGER":
+Path: pulse-analytics
+Method: POST
+COPY THIS URL → .env.local as N8N_ANALYTICS_WEBHOOK_URL
+Used by POST /api/trigger/analytics for manual refresh.
+Responds immediately — processing is async.
+
+STICKY NOTE 4 — named "📖 GET PUBLISHED POSTS":
+Calls Workflow 0 GET_ALL_POSTS with statusFilter: "published".
+Only published posts have platform IDs needed for API calls.
+Filters to last 30 days by default (postedAt >= 30 days ago).
+If webhook payload includes postIds, filter to those specific posts only.
+
+STICKY NOTE 5 — named "🔀 SPLIT BY PLATFORM":
+For each post, creates one item per platform where status = published.
+Each item includes: postId, platform, publishedAt, postText (for logging).
+Platform-specific post IDs come from Sheet columns (stored at publish time).
+NOTE: Platform post IDs must be stored at publish time (Workflow 3 update needed).
+
+STICKY NOTE 6 — named "🐦 TWITTER METRICS":
+Twitter API v2: GET /2/tweets/{id}?tweet.fields=public_metrics
+Returns: { public_metrics: { impression_count, like_count, reply_count, retweet_count } }
+Map: impression_count→impressions, like_count→likes, reply_count+retweet_count→shares
+
+STICKY NOTE 7 — named "📸 INSTAGRAM METRICS":
+Graph API: GET /{media-id}/insights?metric=impressions,likes,comments,shares,reach
+Requires: Instagram Business or Creator account + Page connected
+Map fields directly to analytics schema.
+
+STICKY NOTE 8 — named "📘 FACEBOOK METRICS":
+Graph API: GET /{post-id}/insights?metric=post_impressions,post_reactions_like_total,post_comments,post_shares
+Requires: Facebook Page (not personal profile)
+
+STICKY NOTE 9 — named "🧵 THREADS METRICS":
+Threads Insights API: GET /threads/{media-id}/insights?metric=views,likes,replies,reposts
+Available for Professional accounts only.
+
+STICKY NOTE 10 — named "💾 WRITE TO SHEET":
+HTTP POST to Workflow 0 with UPDATE_ANALYTICS action per post/platform.
+Calculate engagement_rate = (likes + comments + shares) / max(impressions, 1) * 100.
+Cap at 100 to handle API anomalies.
+
+STICKY NOTE 11 — named "📞 CALLBACK":
+POST to N8N_APP_CALLBACK_URL with:
+{ "status": "done", "fetched": N, "failed": M, "timestamp": ISO }
+Continue on Fail: true.
+
+STICKY NOTE 12 — named "❌ ERROR HANDLER":
+COMMON ERRORS:
+- 401 → access token expired → refresh OAuth token or re-auth in n8n
+- 429 → rate limit → add Wait node (60s) and retry once
+- 404 → post deleted from platform → set engagementRate = 0, mark fetchedAt
+- No Skool API → skip Skool items silently (filter before API calls)
+
+═══════════════════════════════════════
+NODES
+═══════════════════════════════════════
+
+STEP 1 — Create workflow "Pulse - Analytics Fetch"
+
+STEP 2A — Schedule Trigger node:
+- Trigger Interval: Days, Days Between Triggers: 1
+- Trigger At Hour: 6, Trigger At Minute: 0
+
+STEP 2B — Webhook node "Manual Trigger":
+- HTTP Method: POST, Path: pulse-analytics
+- Response Mode: Using Respond to Webhook Node
+
+STEP 3 — Respond to Webhook "Respond 200" (connected to Webhook trigger only):
+- Response Code: 200, Body: {"received":true,"mode":"manual"}
+
+STEP 4 — Code node "Extract Trigger Config" (connected from BOTH triggers):
+- Mode: Run Once for All Items
+const isWebhook = $input.first().json.body !== undefined;
+const body = isWebhook ? $input.first().json.body : {};
+return [{ json: {
+  postIds: body.postIds || null,
+  platforms: body.platforms || ['twitter','threads','instagram','facebook','skool'],
+  callbackUrl: body.callbackUrl || $vars.N8N_APP_CALLBACK_URL,
+  cutoffDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+} }];
+
+STEP 5 — HTTP Request "Get Published Posts" (connected to "Extract Trigger Config"):
+- Method: POST, URL: ={{ $vars.N8N_SHEET_WEBHOOK_URL }}, Timeout: 15000ms
+- Body: { "action": "GET_ALL_POSTS", "payload": { "statusFilter": "published" } }
+
+STEP 6 — Code node "Filter and Split Posts" (connected to "Get Published Posts"):
+- Mode: Run Once for All Items
+const config = $('Extract Trigger Config').first().json;
+const posts = $input.first().json.posts || [];
+const platforms = ['twitter','threads','instagram','facebook','skool'];
+const items = [];
+posts.forEach(post => {
+  if (config.postIds && !config.postIds.includes(post.id)) return;
+  if (config.cutoffDate && post.postedAt < config.cutoffDate) return;
+  platforms.forEach(platform => {
+    if (!config.platforms.includes(platform)) return;
+    const variant = post.platforms?.[platform];
+    if (variant?.status !== 'published') return;
+    if (platform === 'skool') return; // No Skool API
+    items.push({ json: {
+      postId: post.id,
+      platform,
+      publishedAt: variant.publishedAt,
+      callbackUrl: config.callbackUrl,
+      postText: post.linkedinText?.slice(0, 100),
+    }});
+  });
+});
+return items.length > 0 ? items : [{ json: { noResults: true } }];
+
+STEP 7 — IF node "Has Posts to Fetch":
+- Condition: {{ $json.noResults }} is not true
+
+→ TRUE branch (has posts):
+
+STEP 8 — Switch node "Route by Platform":
+- Value: {{ $json.platform }}
+- Case "twitter"   → output 0
+- Case "threads"   → output 1
+- Case "instagram" → output 2
+- Case "facebook"  → output 3
+
+STEP 9 — TWITTER BRANCH (output 0):
+HTTP Request "Twitter Get Metrics":
+- Method: GET
+- URL: https://api.twitter.com/2/tweets/{{ $json.tweetId }}?tweet.fields=public_metrics
+- Auth: "Twitter - Pulse" (OAuth2 Bearer)
+- Continue on Fail: true
+
+Code node "Parse Twitter Metrics":
+const data = $input.first().json;
+const m = data.data?.public_metrics || {};
+return [{ json: {
+  postId: $('Filter and Split Posts').item.json.postId,
+  platform: 'twitter',
+  callbackUrl: $('Filter and Split Posts').item.json.callbackUrl,
+  metrics: {
+    impressions: m.impression_count || 0,
+    likes: m.like_count || 0,
+    comments: m.reply_count || 0,
+    shares: m.retweet_count || 0,
+    engagementRate: m.impression_count > 0
+      ? Math.min(100, ((m.like_count||0)+(m.reply_count||0)+(m.retweet_count||0)) / m.impression_count * 100)
+      : 0,
+  },
+} }];
+
+STEP 10 — INSTAGRAM BRANCH (output 1):
+HTTP Request "Instagram Get Insights":
+- Method: GET
+- URL: https://graph.facebook.com/v19.0/{{ $json.instagramMediaId }}/insights?metric=impressions,reach,likes,comments,shares&access_token={{ $credentials['Meta - Pulse'].accessToken }}
+- Continue on Fail: true
+
+Code node "Parse Instagram Metrics":
+(similar pattern — extract from insights array by metric name, calculate engagementRate)
+
+STEP 11 — FACEBOOK BRANCH (output 2):
+HTTP Request "Facebook Get Insights":
+- Method: GET
+- URL: https://graph.facebook.com/v19.0/{{ $json.facebookPostId }}/insights?metric=post_impressions,post_reactions_like_total,post_comments,post_shares&access_token={{ $credentials['Meta - Pulse'].accessToken }}
+- Continue on Fail: true
+
+Code node "Parse Facebook Metrics":
+(same pattern)
+
+STEP 12 — THREADS BRANCH (output 3):
+HTTP Request "Threads Get Insights":
+- Method: GET
+- URL: https://graph.threads.net/v1.0/{{ $json.threadsMediaId }}/insights?metric=views,likes,replies,reposts&access_token={{ $credentials['Threads - Pulse'].accessToken }}
+- Continue on Fail: true
+
+Code node "Parse Threads Metrics":
+(same pattern)
+
+STEP 13 — Code node "Merge All Metrics" (connected from all 4 Parse nodes):
+- Mode: Run Once for All Items
+(all items already have postId, platform, metrics — pass through)
+return $input.all().map(item => ({ json: item.json }));
+
+STEP 14 — HTTP Request "Write Metrics to Sheet" (per item):
+- Method: POST, URL: ={{ $vars.N8N_SHEET_WEBHOOK_URL }}, Timeout: 15000ms
+- Body:
+{
+  "action": "UPDATE_ANALYTICS",
+  "payload": {
+    "postId": "={{ $json.postId }}",
+    "platform": "={{ $json.platform }}",
+    "metrics": "={{ $json.metrics }}"
+  }
+}
+- Continue on Fail: true
+
+STEP 15 — Code node "Build Callback Summary":
+- Mode: Run Once for All Items
+const items = $input.all();
+const fetched = items.filter(i => !i.json.error).length;
+const failed = items.filter(i => i.json.error).length;
+return [{ json: { fetched, failed, timestamp: new Date().toISOString(), callbackUrl: items[0]?.json.callbackUrl } }];
+
+STEP 16 — HTTP Request "Analytics Callback":
+- Method: POST
+- URL: ={{ $json.callbackUrl }}
+- Body: { "status": "done", "fetched": "={{ $json.fetched }}", "failed": "={{ $json.failed }}", "timestamp": "={{ $json.timestamp }}" }
+- Continue on Fail: true
+
+→ FALSE branch (no posts to fetch):
+HTTP Request "Empty Callback":
+- Body: { "status": "done", "fetched": 0, "failed": 0, "message": "No published posts in range" }
+
+STEP 17 — Error Trigger → HTTP Request "Error Callback":
+- Body: { "status": "failed", "error": "={{ $json.message }}" }
+- URL: ={{ $vars.N8N_APP_CALLBACK_URL }}
+- Continue on Fail: true
+
+STEP 18 — WORKFLOW VARIABLES:
+- N8N_SHEET_WEBHOOK_URL: Workflow 0 webhook URL
+- N8N_APP_CALLBACK_URL: https://your-app.com/api/callback/analytics
+
+STEP 19 — CREDENTIALS:
+- "Twitter - Pulse": OAuth2 or API Key (Bearer Token from Twitter Developer Portal)
+- "Meta - Pulse": Facebook App credential with instagram_basic, instagram_manage_insights, pages_read_engagement scopes
+- "Threads - Pulse": Threads API access token (Meta Developer → Threads)
+
+IMPORTANT — Platform Post ID Storage:
+Workflow 4 requires the platform-specific post ID (tweet ID, Instagram media ID, etc.)
+to call the metrics API. Workflow 3 (Publish) must be updated to store these IDs:
+After each platform publish call succeeds, extract the returned post ID and write it
+to a new Sheet column via UPDATE_PLATFORM_VARIANT:
+  { platformPostId: "1234567890" }
+
+Add `platformPostId: string | null` to PlatformVariant type and Sheet schema:
+  [platform]_platform_post_id  — the platform-native ID returned on publish
+
+STEP 20 — Activate the workflow.
+STEP 21 — Return the webhook URL → add to .env.local as N8N_ANALYTICS_WEBHOOK_URL
+```
+
+---
+
+### Workflow 3 — Additional Update: Store Platform Post IDs
+
+When each platform publish succeeds, Workflow 3 must extract the platform-native post ID from the API response and write it back to the Sheet. This ID is required by Workflow 4 to fetch analytics.
+
+**After each platform publish HTTP Request node, add:**
+
+Code node "Extract Platform Post ID":
+```javascript
+const response = $input.first().json;
+// Twitter: response.data.id
+// Instagram: response.id
+// Facebook: response.id
+// Threads: response.id
+// Skool: no ID returned
+const platformPostId = response.data?.id || response.id || null;
+return [{ json: { ...$json, platformPostId } }];
+```
+
+HTTP Request "Store Platform Post ID" (via Workflow 0):
+```json
+{
+  "action": "UPDATE_PLATFORM_VARIANT",
+  "payload": {
+    "postId": "={{ $json.postId }}",
+    "platform": "={{ $json.platform }}",
+    "variant": { "platformPostId": "={{ $json.platformPostId }}" }
+  }
+}
+```
+
+Add `platformPostId: string | null` to:
+- `PlatformVariant` type in `types/index.ts`
+- Sheet column per platform: `[platform]_platform_post_id` (add between error and impressions columns in COLUMN_MAP)
+
+---
+
 ## Final notes for Claude Code
 
 - **MANDATORY AFTER EVERY FEATURE CHANGE**: (1) Write a CHANGELOG.md entry (date, type, files changed, summary, docs affected). (2) Call `POST /api/docs/sync` with the entry, changed files list, and change type. (3) Verify all affected docs returned `"updated"` — retry any that returned `"failed"`. (4) If the sync route doesn't exist yet, write the CHANGELOG entry manually and the route will catch up when built. A task is NOT complete until this step is done.
