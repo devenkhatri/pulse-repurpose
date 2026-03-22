@@ -1,15 +1,18 @@
 "use client"
 
-import { useState, useMemo, useEffect, useRef } from "react"
+import { useState, useMemo, useEffect, useRef, useCallback } from "react"
 import { PostRow } from "@/components/dashboard/PostRow"
 import { PostSlideOver } from "@/components/dashboard/PostSlideOver"
+import { BulkProgressPanel } from "@/components/dashboard/BulkProgressPanel"
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { isWithinInterval, parseISO, startOfDay, endOfDay } from "date-fns"
+import { toast } from "sonner"
 import type { LinkedInPost, Platform, PostStatus } from "@/types"
+import type { BulkPostResult } from "@/app/api/trigger/repurpose/bulk/route"
 
 const PLATFORM_FILTERS = [
   { value: "all", label: "All Platforms" },
@@ -85,6 +88,8 @@ export function PostsTable({
   const [searchQuery, setSearchQuery] = useState("")
   const [sort, setSort] = useState<SortState>(loadSortFromStorage)
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
+  const [bulkLoading, setBulkLoading] = useState(false)
+  const [bulkResults, setBulkResults] = useState<BulkPostResult[] | null>(null)
 
   // Sync selectedRows when posts change (remove stale ids)
   useEffect(() => {
@@ -194,6 +199,50 @@ export function PostsTable({
       else next.delete(id)
       return next
     })
+  }
+
+  const handleBulkRepurpose = useCallback(async () => {
+    const postIds = Array.from(selectedRows)
+    if (postIds.length === 0) return
+
+    setBulkLoading(true)
+    setBulkResults(null)
+
+    try {
+      const res = await fetch("/api/trigger/repurpose/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postIds }),
+      })
+      const json = await res.json()
+
+      if (!res.ok) {
+        toast.error(json.error ?? "Bulk repurpose failed")
+        return
+      }
+
+      setBulkResults(json.results)
+      const { queued, skipped, failed } = json.summary
+      if (queued > 0) {
+        toast.success(`${queued} post${queued !== 1 ? "s" : ""} queued for repurpose`)
+      }
+      if (skipped > 0) {
+        toast.info(`${skipped} post${skipped !== 1 ? "s" : ""} skipped (not all platforms pending)`)
+      }
+      if (failed > 0) {
+        toast.error(`${failed} post${failed !== 1 ? "s" : ""} failed`)
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error"
+      toast.error(`Bulk repurpose error: ${message}`)
+    } finally {
+      setBulkLoading(false)
+    }
+  }, [selectedRows])
+
+  function closeBulkPanel() {
+    setBulkResults(null)
+    setSelectedRows(new Set())
   }
 
   const anyFilterActive =
@@ -312,6 +361,41 @@ export function PostsTable({
         <p className="text-xs text-zinc-500 mb-3">
           Showing {filteredPosts.length} of {posts.length} post{posts.length !== 1 ? "s" : ""}
         </p>
+      )}
+
+      {/* Bulk action bar */}
+      {selectedRows.size > 0 && !bulkLoading && !bulkResults && (
+        <div className="flex items-center gap-3 mb-4 px-4 py-2.5 rounded-lg bg-[#7C3AED]/10 border border-[#7C3AED]/30">
+          <span className="text-sm text-zinc-300">
+            <span className="font-semibold text-white">{selectedRows.size}</span>{" "}
+            post{selectedRows.size !== 1 ? "s" : ""} selected
+          </span>
+          <Button
+            size="sm"
+            className="h-7 text-xs bg-[#7C3AED] hover:bg-[#6D28D9] text-white"
+            onClick={handleBulkRepurpose}
+          >
+            Repurpose selected ({selectedRows.size})
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs text-zinc-500 hover:text-white"
+            onClick={() => setSelectedRows(new Set())}
+          >
+            Deselect all
+          </Button>
+        </div>
+      )}
+
+      {/* Bulk progress panel */}
+      {(bulkLoading || bulkResults) && (
+        <BulkProgressPanel
+          loading={bulkLoading}
+          postCount={bulkResults ? bulkResults.length : selectedRows.size}
+          results={bulkResults}
+          onClose={closeBulkPanel}
+        />
       )}
 
       {/* Table */}
