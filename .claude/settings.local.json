@@ -14,7 +14,16 @@
       "mcp__plugin_playwright_playwright__browser_evaluate",
       "mcp__plugin_playwright_playwright__browser_network_requests",
       "Bash(python3:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(grep -r \"CarouselPromptOutput\\\\|CarouselContent\" /Users/devengoratela/Work/pulse-repurpose --include=*.ts --include=*.tsx)",
+      "Bash(grep -r Carousel /Users/devengoratela/Work/pulse-repurpose --include=*.ts --include=*.tsx)",
+      "Bash(grep -r \"carousel\\\\|slide\\\\|multi.*post\\\\|multi.*image\" /Users/devengoratela/Work/pulse-repurpose --include=*.ts --include=*.tsx --include=*.md)",
+      "Bash(find /Users/devengoratela/Work/pulse-repurpose -name *store* -type f)",
+      "Bash(find /Users/devengoratela/Work/pulse-repurpose/components -type f -name *.tsx)",
+      "Bash(for f:*)",
+      "Bash(do echo:*)",
+      "Bash(node -e \"require\\(''./$f''\\); console.log\\(''✓ valid JSON''\\);\")",
+      "Bash(done)"
     ]
   }
 }

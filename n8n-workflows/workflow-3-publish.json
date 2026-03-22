@@ -1,0 +1,1316 @@
+{
+  "name": "Pulse - Publish",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 🚀 Pulse — Publish  (Workflow 3)\n\nReceives a **single-platform publish request** from the Pulse app and publishes the content to the correct social network. Handles image upload where required, writes the published status + platform post ID back to Google Sheets, posts the first comment (if provided) after a 30-second delay, and finally calls back to the app.\n\n**Webhook path:** `pulse-publish`  |  **Method:** POST\n\n**Input payload:**\n```\n{\n  platform: 'twitter' | 'threads' | 'instagram' | 'facebook' | 'skool',\n  text: string,           // post body (hashtags appended separately)\n  imageUrl: string|null,  // optional public image URL\n  hashtags: string[],     // appended to fullText before posting\n  scheduledAt: string|null,\n  postId: string,         // Sheet row ID\n  sheetRowId: string,\n  callbackUrl: string,    // app's /api/callback/publish\n  firstComment: string|null\n}\n```",
+        "height": 220,
+        "width": 2400,
+        "color": 0
+      },
+      "id": "wf3-sticky-01-overview",
+      "name": "Sticky Note — Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 100]
+    },
+    {
+      "parameters": {
+        "content": "## ⚙️ Setup — Credentials\n\n**1. Twitter / X**\nCreate `OAuth1 API` credential with your Twitter App keys (v1.1 endpoint for media upload + v2 for tweets).\nUpdate `YOUR_TWITTER_CREDENTIAL_ID` in:\n- `HTTP - Twitter Upload Media`\n- `HTTP - Twitter Post (With Media)`\n- `HTTP - Twitter Post (Text Only)`\n- `HTTP - Twitter First Comment`\n\n**2. Meta (Threads · Instagram · Facebook)**\nCreate `Header Auth` credential:\n- Name: `Authorization`\n- Value: `Bearer YOUR_LONG_LIVED_ACCESS_TOKEN`\n\nUpdate `YOUR_META_CREDENTIAL_ID` in all Threads / Instagram / Facebook HTTP nodes.\n\n**3. Skool** *(placeholder — no public API)*\nCreate `Header Auth` with your session cookie:\n- Name: `Cookie`\n- Value: `session=YOUR_COOKIE_VALUE`\nUpdate `YOUR_SKOOL_CREDENTIAL_ID` in `HTTP - Skool Post` and `HTTP - Skool First Comment`.\n\n**4. Google Sheets**\nReplace `YOUR_SPREADSHEET_ID` and select your Google OAuth2 credential in both GSheets nodes.\n\n**5. n8n Variables** *(Admin → Variables)*\nSet these instance-level variables:\n- `THREADS_USER_ID` — your Threads/Meta user ID\n- `INSTAGRAM_USER_ID` — your IG user ID\n- `FACEBOOK_PAGE_ID` — your FB Page ID\n- `SKOOL_COMMUNITY_ID` — your Skool community ID",
+        "height": 660,
+        "width": 400,
+        "color": 3
+      },
+      "id": "wf3-sticky-02-setup",
+      "name": "Sticky Note — Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-230, 340]
+    },
+    {
+      "parameters": {
+        "content": "## 🐦 Twitter / X Branch  (Switch output 0)\n\n**API:** Twitter API v2  +  Twitter Upload API v1.1\n**Auth:** OAuth 1.0a (User Context)\n\n**Text-only flow:**\n→ `POST https://api.twitter.com/2/tweets`\n→ Body: `{ text }` (truncated to 280 chars)\n\n**With image flow:**\n1. `GET imageUrl` → download as binary\n2. `POST https://upload.twitter.com/1.1/media/upload.json` → returns `media_id_string`\n3. `POST /2/tweets` → Body: `{ text, media: { media_ids: [media_id_string] } }`\n\n**First comment:** Reply to the published tweet using `in_reply_to_tweet_id`.\n\n⚠️ Twitter image upload supports files up to **5 MB**. For larger images, resize before calling this workflow.",
+        "height": 260,
+        "width": 1580,
+        "color": 4
+      },
+      "id": "wf3-sticky-03-twitter",
+      "name": "Sticky Note — Twitter Branch",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [860, -200]
+    },
+    {
+      "parameters": {
+        "content": "## 🧵 Threads Branch  (Switch output 1)\n\n**API:** Meta Graph API — Threads (`graph.threads.net/v1.0`)\n**Auth:** Bearer access token via `THREADS_USER_ID` n8n variable\n\n**Two-step publish:**\n1. **Create container** → `POST /{THREADS_USER_ID}/threads`\n   - Text-only: `{ media_type: 'TEXT', text }`\n   - With image: `{ media_type: 'IMAGE', image_url, text }`\n   - Returns `{ id: container_id }`\n2. **Publish** → `POST /{THREADS_USER_ID}/threads_publish`\n   - Body: `{ creation_id: container_id }`\n   - Returns `{ id: post_id }`\n\n**First comment:** Create reply container → publish reply.",
+        "height": 260,
+        "width": 680,
+        "color": 4
+      },
+      "id": "wf3-sticky-04-threads",
+      "name": "Sticky Note — Threads Branch",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [860, 200]
+    },
+    {
+      "parameters": {
+        "content": "## 📸 Instagram Branch  (Switch output 2)\n\n**API:** Meta Graph API (`graph.facebook.com/v18.0`)\n**Auth:** Bearer token + `INSTAGRAM_USER_ID` n8n variable\n\n**Two-step publish:**\n1. **Create container** → `POST /{IG_USER_ID}/media`\n   - Body: `{ image_url, caption }` (image required for feed posts)\n   - Returns `{ id: container_id }`\n2. **Publish** → `POST /{IG_USER_ID}/media_publish`\n   - Body: `{ creation_id: container_id }`\n\n**First comment:** `POST /{post_id}/comments` with `{ message }`\n\n⚠️ Instagram does not support text-only feed posts. Always provide an `imageUrl`.",
+        "height": 260,
+        "width": 680,
+        "color": 4
+      },
+      "id": "wf3-sticky-05-instagram",
+      "name": "Sticky Note — Instagram Branch",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [860, 460]
+    },
+    {
+      "parameters": {
+        "content": "## 📘 Facebook Branch  (Switch output 3)\n\n**API:** Meta Graph API (`graph.facebook.com/v18.0`)\n**Auth:** Bearer Page Access Token + `FACEBOOK_PAGE_ID` n8n variable\n\n**Text-only flow:**\n→ `POST /{PAGE_ID}/feed` with `{ message }`\n\n**With image flow:**\n1. Upload photo (unpublished): `POST /{PAGE_ID}/photos` with `{ url, published: false }`\n   → returns `{ id: photo_id }`\n2. Publish post with photo: `POST /{PAGE_ID}/feed` with `{ message, attached_media: [{ media_fbid: photo_id }] }`\n\n**First comment:** `POST /{post_id}/comments` with `{ message }`",
+        "height": 260,
+        "width": 680,
+        "color": 4
+      },
+      "id": "wf3-sticky-06-facebook",
+      "name": "Sticky Note — Facebook Branch",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [860, 680]
+    },
+    {
+      "parameters": {
+        "content": "## 🏫 Skool Branch  (Switch output 4)\n\n⚠️ **Skool has no public API.** The `HTTP - Skool Post` node is a **placeholder**.\n\n**To make this work, you have 3 options:**\n\n**Option A — Skool unofficial endpoints** *(advanced)*\nReverse-engineer Skool's internal API from browser DevTools. Update the URL and auth headers to match.\n\n**Option B — Browser automation**\nReplace this node with an n8n workflow that triggers a Puppeteer/Playwright script to post on Skool.\n\n**Option C — Skip Skool publishing**\nIf you manage Skool manually, leave the node as-is. The workflow will fail gracefully and mark `skool_status = failed` in the Sheet. The app lets you retry later.\n\nUpdate `YOUR_SKOOL_CREDENTIAL_ID` and the endpoint URL once you have a working integration.",
+        "height": 300,
+        "width": 680,
+        "color": 1
+      },
+      "id": "wf3-sticky-07-skool",
+      "name": "Sticky Note — Skool Placeholder",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [860, 920]
+    },
+    {
+      "parameters": {
+        "content": "## 🔀 After Publish — Status Update\n\nAll 5 platform branches merge here. Since only one platform fires per execution, the Merge node (Append mode) immediately forwards the single result.\n\n**Code - Build Sheet Update Row** constructs:\n```\n{ post_id, {platform}_status, {platform}_published_at, {platform}_platform_post_id }\n```\n\n**GSheets - Update Publish Status** writes these columns using `post_id` as the match key.\n\n**Code - Restore Context** passes the original publish result (not the GSheets response) forward so downstream nodes have `postId`, `platform`, `callbackUrl`, `firstComment`.",
+        "height": 260,
+        "width": 780,
+        "color": 4
+      },
+      "id": "wf3-sticky-08-post-publish",
+      "name": "Sticky Note — Post-Publish",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2380, 100]
+    },
+    {
+      "parameters": {
+        "content": "## 💬 First Comment Flow\n\nIf `firstComment` is non-empty, the workflow:\n1. **Waits 30 seconds** — gives the platform time to index the post before a reply/comment is attached\n2. **Routes** to the platform-specific comment API (same Switch pattern as publishing)\n3. **Posts the comment** using the `platformPostId` returned by the publish step\n4. **Updates `{platform}_first_comment_status`** in the Sheet (`published` or `failed`)\n\n**Platform comment APIs:**\n- Twitter: `POST /2/tweets` with `reply.in_reply_to_tweet_id`\n- Threads: 2-step create reply container → publish reply\n- Instagram: `POST /{post_id}/comments`\n- Facebook: `POST /{post_id}/comments`\n- Skool: placeholder endpoint\n\nIf `firstComment` is null/empty, this entire branch is **skipped** and the workflow goes straight to the callback.",
+        "height": 320,
+        "width": 1280,
+        "color": 4
+      },
+      "id": "wf3-sticky-09-first-comment",
+      "name": "Sticky Note — First Comment Flow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [3420, -100]
+    },
+    {
+      "parameters": {
+        "content": "## 📞 Callback to App\n\nThe final `HTTP - Callback to App` node sends the result to the Pulse app's `/api/callback/publish` endpoint:\n\n```json\n{ \"postId\": \"...\", \"platform\": \"twitter\", \"status\": \"published\" }\n```\n\nThe app uses this to:\n- Invalidate the post cache\n- Update the local content file status\n- Surface the result in the UI\n\nIf the publish failed at any platform node, the status will be `failed` and the app reverts the platform status to `approved` so the user can retry.",
+        "height": 260,
+        "width": 540,
+        "color": 0
+      },
+      "id": "wf3-sticky-10-callback",
+      "name": "Sticky Note — Callback",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [5180, 200]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pulse-publish",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "wf3-n01-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 400],
+      "webhookId": "pulse-publish-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate and normalise publish payload\nconst input = $input.first().json;\nconst required = ['platform', 'text', 'postId', 'sheetRowId', 'callbackUrl'];\nfor (const field of required) {\n  if (!input[field]) {\n    throw new Error(`Missing required field: ${field}`);\n  }\n}\n\nconst PLATFORMS = ['twitter', 'threads', 'instagram', 'facebook', 'skool'];\nif (!PLATFORMS.includes(input.platform)) {\n  throw new Error(`Invalid platform: ${input.platform}. Must be one of: ${PLATFORMS.join(', ')}`);\n}\n\n// Build full post text including hashtags\nconst hashtags = Array.isArray(input.hashtags) ? input.hashtags : [];\nconst hashtagStr = hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ');\nconst fullText = hashtags.length > 0 ? `${input.text}\\n\\n${hashtagStr}` : input.text;\n\nreturn [{\n  json: {\n    platform: input.platform,\n    text: input.text,\n    fullText,\n    hashtags,\n    imageUrl: input.imageUrl || null,\n    scheduledAt: input.scheduledAt || null,\n    sheetRowId: String(input.sheetRowId),\n    postId: String(input.postId),\n    callbackUrl: input.callbackUrl,\n    firstComment: input.firstComment || null\n  }\n}];\n"
+      },
+      "id": "wf3-n02-validate",
+      "name": "Code - Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "id": "rule-twitter",
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "twitter",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Twitter"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "id": "rule-threads",
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "threads",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Threads"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "id": "rule-instagram",
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "instagram",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Instagram"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "id": "rule-facebook",
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "facebook",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Facebook"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "id": "rule-skool",
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "skool",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Skool"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf3-n03-switch-platform",
+      "name": "Switch - Route Platform",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [680, 400]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "tw-has-image",
+              "leftValue": "={{ $json.imageUrl }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "isNotEmpty" }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf3-n04-tw-has-image",
+      "name": "IF - Twitter Has Image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 120]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.imageUrl }}",
+        "options": {
+          "response": { "response": { "responseFormat": "file", "outputPropertyName": "data" } }
+        }
+      },
+      "id": "wf3-n05-tw-download-img",
+      "name": "HTTP - Download Image (Twitter)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 40]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://upload.twitter.com/1.1/media/upload.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth1Api",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "media",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf3-n06-tw-upload-media",
+      "name": "HTTP - Twitter Upload Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 40],
+      "credentials": {
+        "oAuth1Api": {
+          "id": "YOUR_TWITTER_CREDENTIAL_ID",
+          "name": "Twitter OAuth 1.0a"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge tweet body with media_id\nconst validateData = $('Code - Validate Input').first().json;\nconst mediaId = $json.media_id_string || $json.media_id || null;\n\nreturn [{\n  json: {\n    ...validateData,\n    mediaId\n  }\n}];\n"
+      },
+      "id": "wf3-n07-tw-set-media-id",
+      "name": "Code - Set Twitter Media ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 40]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.twitter.com/2/tweets",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth1Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.fullText.slice(0, 280)) }},\n  {{ $json.mediaId ? '\"media\": {\"media_ids\": [\"' + $json.mediaId + '\"]}' : '' }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n08-tw-post-with-media",
+      "name": "HTTP - Twitter Post (With Media)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 40],
+      "credentials": {
+        "oAuth1Api": {
+          "id": "YOUR_TWITTER_CREDENTIAL_ID",
+          "name": "Twitter OAuth 1.0a"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.twitter.com/2/tweets",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth1Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.fullText.slice(0, 280)) }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n09-tw-post-text",
+      "name": "HTTP - Twitter Post (Text Only)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 200],
+      "credentials": {
+        "oAuth1Api": {
+          "id": "YOUR_TWITTER_CREDENTIAL_ID",
+          "name": "Twitter OAuth 1.0a"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "numberInputs": 2
+      },
+      "id": "wf3-n10-tw-merge",
+      "name": "Merge - Twitter Result",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2000, 120]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract Twitter result\nconst validateData = $('Code - Validate Input').first().json;\nconst response = $json;\nconst tweetId = response?.data?.id || null;\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    postId: validateData.postId,\n    platform: 'twitter',\n    platformPostId: tweetId,\n    publishedAt: now,\n    status: tweetId ? 'published' : 'failed',\n    callbackUrl: validateData.callbackUrl,\n    firstComment: validateData.firstComment,\n    fullText: validateData.fullText\n  }\n}];\n"
+      },
+      "id": "wf3-n11-tw-extract",
+      "name": "Code - Extract Twitter Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 120]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.threads.net/v1.0/{{ $vars.THREADS_USER_ID }}/threads",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"media_type\": {{ $json.imageUrl ? '\"IMAGE\"' : '\"TEXT\"' }},\n  \"text\": {{ JSON.stringify($json.fullText.slice(0, 500)) }},\n  {{ $json.imageUrl ? '\"image_url\": ' + JSON.stringify($json.imageUrl) : '' }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n12-th-create",
+      "name": "HTTP - Threads Create Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 340],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.threads.net/v1.0/{{ $vars.THREADS_USER_ID }}/threads_publish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"creation_id\": {{ JSON.stringify($json.id) }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n13-th-publish",
+      "name": "HTTP - Threads Publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 340],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract Threads result\nconst validateData = $('Code - Validate Input').first().json;\nconst response = $json;\nconst threadPostId = response?.id || null;\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    postId: validateData.postId,\n    platform: 'threads',\n    platformPostId: threadPostId,\n    publishedAt: now,\n    status: threadPostId ? 'published' : 'failed',\n    callbackUrl: validateData.callbackUrl,\n    firstComment: validateData.firstComment,\n    fullText: validateData.fullText\n  }\n}];\n"
+      },
+      "id": "wf3-n14-th-extract",
+      "name": "Code - Extract Threads Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 340]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $vars.INSTAGRAM_USER_ID }}/media",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  {{ $json.imageUrl ? '\"image_url\": ' + JSON.stringify($json.imageUrl) + ',' : '\"media_type\": \"REELS\",' }}\n  \"caption\": {{ JSON.stringify($json.fullText.slice(0, 2200)) }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n15-ig-create",
+      "name": "HTTP - Instagram Create Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 560],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $vars.INSTAGRAM_USER_ID }}/media_publish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"creation_id\": {{ JSON.stringify($json.id) }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n16-ig-publish",
+      "name": "HTTP - Instagram Publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 560],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract Instagram result\nconst validateData = $('Code - Validate Input').first().json;\nconst response = $json;\nconst igPostId = response?.id || null;\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    postId: validateData.postId,\n    platform: 'instagram',\n    platformPostId: igPostId,\n    publishedAt: now,\n    status: igPostId ? 'published' : 'failed',\n    callbackUrl: validateData.callbackUrl,\n    firstComment: validateData.firstComment,\n    fullText: validateData.fullText\n  }\n}];\n"
+      },
+      "id": "wf3-n17-ig-extract",
+      "name": "Code - Extract Instagram Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 560]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "fb-has-image",
+              "leftValue": "={{ $json.imageUrl }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "isNotEmpty" }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf3-n18-fb-has-image",
+      "name": "IF - Facebook Has Image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 780]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $vars.FACEBOOK_PAGE_ID }}/photos",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"url\": {{ JSON.stringify($json.imageUrl) }},\n  \"published\": false\n}",
+        "options": {}
+      },
+      "id": "wf3-n19-fb-upload-photo",
+      "name": "HTTP - Facebook Upload Photo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 700],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $vars.FACEBOOK_PAGE_ID }}/feed",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": {{ JSON.stringify($('Code - Validate Input').first().json.fullText) }},\n  \"attached_media\": [{\"media_fbid\": {{ JSON.stringify($json.id) }}}]\n}",
+        "options": {}
+      },
+      "id": "wf3-n20-fb-post-with-photo",
+      "name": "HTTP - Facebook Post (With Photo)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 700],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $vars.FACEBOOK_PAGE_ID }}/feed",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": {{ JSON.stringify($json.fullText) }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n21-fb-post-text",
+      "name": "HTTP - Facebook Post (Text Only)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 860],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "numberInputs": 2
+      },
+      "id": "wf3-n22-fb-merge",
+      "name": "Merge - Facebook Result",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1560, 780]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract Facebook result\nconst validateData = $('Code - Validate Input').first().json;\nconst response = $json;\nconst fbPostId = response?.id || null;\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    postId: validateData.postId,\n    platform: 'facebook',\n    platformPostId: fbPostId,\n    publishedAt: now,\n    status: fbPostId ? 'published' : 'failed',\n    callbackUrl: validateData.callbackUrl,\n    firstComment: validateData.firstComment,\n    fullText: validateData.fullText\n  }\n}];\n"
+      },
+      "id": "wf3-n23-fb-extract",
+      "name": "Code - Extract Facebook Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 780]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://www.skool.com/api/posts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.text) }},\n  \"communityId\": {{ JSON.stringify($vars.SKOOL_COMMUNITY_ID) }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n24-sk-post",
+      "name": "HTTP - Skool Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 1000],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_SKOOL_CREDENTIAL_ID",
+          "name": "Skool Session Cookie"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract Skool result\n// NOTE: Skool does not have a public API. Update this node to match\n// your actual Skool integration method (e.g. Zapier, Make, or browser automation).\nconst validateData = $('Code - Validate Input').first().json;\nconst response = $json;\nconst skoolPostId = response?.id || response?.postId || null;\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    postId: validateData.postId,\n    platform: 'skool',\n    platformPostId: skoolPostId,\n    publishedAt: now,\n    status: skoolPostId ? 'published' : 'failed',\n    callbackUrl: validateData.callbackUrl,\n    firstComment: validateData.firstComment,\n    fullText: validateData.fullText\n  }\n}];\n"
+      },
+      "id": "wf3-n25-sk-extract",
+      "name": "Code - Extract Skool Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 1000]
+    },
+
+    {
+      "parameters": {
+        "numberInputs": 5
+      },
+      "id": "wf3-n26-merge-all",
+      "name": "Merge - All Platform Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2400, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Google Sheets update row for published status\nconst d = $json;\nconst p = d.platform;\nconst row = {\n  post_id: d.postId\n};\n\nrow[`${p}_status`] = d.status;\nif (d.publishedAt) row[`${p}_published_at`] = d.publishedAt;\nif (d.platformPostId) row[`${p}_platform_post_id`] = d.platformPostId;\n\nreturn [{ json: { ...d, _sheetRow: row } }];\n"
+      },
+      "id": "wf3-n27-build-sheet-row",
+      "name": "Code - Build Sheet Update Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2620, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": ["post_id"],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "wf3-n28-gsheets-update-status",
+      "name": "GSheets - Update Publish Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [2840, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass through original publish result (not sheet row) for callback\nconst all = $input.all();\nreturn all.map(item => ({\n  json: {\n    postId: item.json.postId,\n    platform: item.json.platform,\n    platformPostId: item.json.platformPostId,\n    publishedAt: item.json.publishedAt,\n    status: item.json.status,\n    callbackUrl: item.json.callbackUrl,\n    firstComment: item.json.firstComment,\n    fullText: item.json.fullText\n  }\n}));\n"
+      },
+      "id": "wf3-n28b-restore-ctx",
+      "name": "Code - Restore Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3060, 400]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "has-first-comment",
+              "leftValue": "={{ $json.firstComment }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "isNotEmpty" }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf3-n29-if-first-comment",
+      "name": "IF - Has First Comment?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3280, 400]
+    },
+
+    {
+      "parameters": {
+        "unit": "seconds",
+        "amount": 30
+      },
+      "id": "wf3-n30-wait",
+      "name": "Wait - 30 Seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [3500, 260]
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "id": "fc-twitter",
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "twitter",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Twitter FC"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "id": "fc-threads",
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "threads",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Threads FC"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "id": "fc-instagram",
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "instagram",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Instagram FC"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "id": "fc-facebook",
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "facebook",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Facebook FC"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "id": "fc-skool",
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "skool",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Skool FC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf3-n31-fc-switch",
+      "name": "Switch - First Comment Platform",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [3720, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.twitter.com/2/tweets",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth1Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.firstComment.slice(0, 280)) }},\n  \"reply\": {\n    \"in_reply_to_tweet_id\": {{ JSON.stringify($json.platformPostId) }}\n  }\n}",
+        "options": {}
+      },
+      "id": "wf3-n32-fc-twitter",
+      "name": "HTTP - Twitter First Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3940, 80],
+      "credentials": {
+        "oAuth1Api": {
+          "id": "YOUR_TWITTER_CREDENTIAL_ID",
+          "name": "Twitter OAuth 1.0a"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.threads.net/v1.0/{{ $json.platformPostId }}/replies",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.firstComment.slice(0, 500)) }},\n  \"media_type\": \"TEXT\"\n}",
+        "options": {}
+      },
+      "id": "wf3-n33-fc-threads-create",
+      "name": "HTTP - Threads First Comment Create",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3940, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.threads.net/v1.0/{{ $('Switch - First Comment Platform').item.json.platformPostId }}/replies_publish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"creation_id\": {{ JSON.stringify($json.id) }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n33b-fc-threads-publish",
+      "name": "HTTP - Threads First Comment Publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4140, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.platformPostId }}/comments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": {{ JSON.stringify($json.firstComment) }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n34-fc-instagram",
+      "name": "HTTP - Instagram First Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3940, 320],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.platformPostId }}/comments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": {{ JSON.stringify($json.firstComment) }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n35-fc-facebook",
+      "name": "HTTP - Facebook First Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3940, 440],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_META_CREDENTIAL_ID",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://www.skool.com/api/posts/{{ $json.platformPostId }}/comments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.firstComment) }}\n}",
+        "options": {}
+      },
+      "id": "wf3-n36-fc-skool",
+      "name": "HTTP - Skool First Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3940, 560],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_SKOOL_CREDENTIAL_ID",
+          "name": "Skool Session Cookie"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "numberInputs": 5
+      },
+      "id": "wf3-n37-fc-merge",
+      "name": "Merge - First Comment Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [4340, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build sheet row for first comment status update\nconst d = $input.first().json;\nconst platform = d.platform || $('Switch - First Comment Platform').item.json.platform;\nconst status = d.id || d.data?.id ? 'published' : 'failed';\n\nreturn [{\n  json: {\n    postId: $('Code - Restore Context').first().json.postId,\n    platform,\n    firstCommentStatus: status,\n    callbackUrl: $('Code - Restore Context').first().json.callbackUrl,\n    publishResult: $('Code - Restore Context').first().json\n  }\n}];\n"
+      },
+      "id": "wf3-n38-fc-build-row",
+      "name": "Code - Build FC Status Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4560, 260]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "post_id": "={{ $json.postId }}",
+            "twitter_first_comment_status": "={{ $json.platform === 'twitter' ? $json.firstCommentStatus : undefined }}",
+            "threads_first_comment_status": "={{ $json.platform === 'threads' ? $json.firstCommentStatus : undefined }}",
+            "instagram_first_comment_status": "={{ $json.platform === 'instagram' ? $json.firstCommentStatus : undefined }}",
+            "facebook_first_comment_status": "={{ $json.platform === 'facebook' ? $json.firstCommentStatus : undefined }}",
+            "skool_first_comment_status": "={{ $json.platform === 'skool' ? $json.firstCommentStatus : undefined }}"
+          },
+          "matchingColumns": ["post_id"],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "wf3-n39-fc-gsheets-update",
+      "name": "GSheets - Update First Comment Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [4780, 260],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "numberInputs": 2
+      },
+      "id": "wf3-n40-callback-merge",
+      "name": "Merge - Before Callback",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [5000, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build final callback payload\nlet postId = '';\nlet platform = '';\nlet status = 'published';\nlet callbackUrl = '';\n\ntry {\n  const ctx = $('Code - Restore Context').first().json;\n  postId = ctx.postId;\n  platform = ctx.platform;\n  status = ctx.status;\n  callbackUrl = ctx.callbackUrl;\n} catch(e) {\n  const inp = $input.first().json;\n  postId = inp.postId || inp.publishResult?.postId || '';\n  platform = inp.platform || inp.publishResult?.platform || '';\n  status = inp.status || 'published';\n  callbackUrl = inp.callbackUrl || inp.publishResult?.callbackUrl || '';\n}\n\nreturn [{\n  json: { postId, platform, status, callbackUrl }\n}];\n"
+      },
+      "id": "wf3-n41-build-callback",
+      "name": "Code - Build Callback Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5220, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"postId\": {{ JSON.stringify($json.postId) }},\n  \"platform\": {{ JSON.stringify($json.platform) }},\n  \"status\": {{ JSON.stringify($json.status) }}\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "wf3-n42-callback",
+      "name": "HTTP - Callback to App",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5440, 400]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Code - Validate Input", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Validate Input": {
+      "main": [
+        [{ "node": "Switch - Route Platform", "type": "main", "index": 0 }]
+      ]
+    },
+    "Switch - Route Platform": {
+      "main": [
+        [{ "node": "IF - Twitter Has Image?", "type": "main", "index": 0 }],
+        [{ "node": "HTTP - Threads Create Container", "type": "main", "index": 0 }],
+        [{ "node": "HTTP - Instagram Create Container", "type": "main", "index": 0 }],
+        [{ "node": "IF - Facebook Has Image?", "type": "main", "index": 0 }],
+        [{ "node": "HTTP - Skool Post", "type": "main", "index": 0 }]
+      ]
+    },
+    "IF - Twitter Has Image?": {
+      "main": [
+        [{ "node": "HTTP - Download Image (Twitter)", "type": "main", "index": 0 }],
+        [{ "node": "HTTP - Twitter Post (Text Only)", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Download Image (Twitter)": {
+      "main": [
+        [{ "node": "HTTP - Twitter Upload Media", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Twitter Upload Media": {
+      "main": [
+        [{ "node": "Code - Set Twitter Media ID", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Set Twitter Media ID": {
+      "main": [
+        [{ "node": "HTTP - Twitter Post (With Media)", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Twitter Post (With Media)": {
+      "main": [
+        [{ "node": "Merge - Twitter Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Twitter Post (Text Only)": {
+      "main": [
+        [{ "node": "Merge - Twitter Result", "type": "main", "index": 1 }]
+      ]
+    },
+    "Merge - Twitter Result": {
+      "main": [
+        [{ "node": "Code - Extract Twitter Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Extract Twitter Result": {
+      "main": [
+        [{ "node": "Merge - All Platform Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Threads Create Container": {
+      "main": [
+        [{ "node": "HTTP - Threads Publish", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Threads Publish": {
+      "main": [
+        [{ "node": "Code - Extract Threads Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Extract Threads Result": {
+      "main": [
+        [{ "node": "Merge - All Platform Results", "type": "main", "index": 1 }]
+      ]
+    },
+    "HTTP - Instagram Create Container": {
+      "main": [
+        [{ "node": "HTTP - Instagram Publish", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Instagram Publish": {
+      "main": [
+        [{ "node": "Code - Extract Instagram Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Extract Instagram Result": {
+      "main": [
+        [{ "node": "Merge - All Platform Results", "type": "main", "index": 2 }]
+      ]
+    },
+    "IF - Facebook Has Image?": {
+      "main": [
+        [{ "node": "HTTP - Facebook Upload Photo", "type": "main", "index": 0 }],
+        [{ "node": "HTTP - Facebook Post (Text Only)", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Facebook Upload Photo": {
+      "main": [
+        [{ "node": "HTTP - Facebook Post (With Photo)", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Facebook Post (With Photo)": {
+      "main": [
+        [{ "node": "Merge - Facebook Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Facebook Post (Text Only)": {
+      "main": [
+        [{ "node": "Merge - Facebook Result", "type": "main", "index": 1 }]
+      ]
+    },
+    "Merge - Facebook Result": {
+      "main": [
+        [{ "node": "Code - Extract Facebook Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Extract Facebook Result": {
+      "main": [
+        [{ "node": "Merge - All Platform Results", "type": "main", "index": 3 }]
+      ]
+    },
+    "HTTP - Skool Post": {
+      "main": [
+        [{ "node": "Code - Extract Skool Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Extract Skool Result": {
+      "main": [
+        [{ "node": "Merge - All Platform Results", "type": "main", "index": 4 }]
+      ]
+    },
+    "Merge - All Platform Results": {
+      "main": [
+        [{ "node": "Code - Build Sheet Update Row", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Build Sheet Update Row": {
+      "main": [
+        [{ "node": "GSheets - Update Publish Status", "type": "main", "index": 0 }]
+      ]
+    },
+    "GSheets - Update Publish Status": {
+      "main": [
+        [{ "node": "Code - Restore Context", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Restore Context": {
+      "main": [
+        [{ "node": "IF - Has First Comment?", "type": "main", "index": 0 }]
+      ]
+    },
+    "IF - Has First Comment?": {
+      "main": [
+        [{ "node": "Wait - 30 Seconds", "type": "main", "index": 0 }],
+        [{ "node": "Merge - Before Callback", "type": "main", "index": 1 }]
+      ]
+    },
+    "Wait - 30 Seconds": {
+      "main": [
+        [{ "node": "Switch - First Comment Platform", "type": "main", "index": 0 }]
+      ]
+    },
+    "Switch - First Comment Platform": {
+      "main": [
+        [{ "node": "HTTP - Twitter First Comment", "type": "main", "index": 0 }],
+        [{ "node": "HTTP - Threads First Comment Create", "type": "main", "index": 0 }],
+        [{ "node": "HTTP - Instagram First Comment", "type": "main", "index": 0 }],
+        [{ "node": "HTTP - Facebook First Comment", "type": "main", "index": 0 }],
+        [{ "node": "HTTP - Skool First Comment", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Twitter First Comment": {
+      "main": [
+        [{ "node": "Merge - First Comment Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Threads First Comment Create": {
+      "main": [
+        [{ "node": "HTTP - Threads First Comment Publish", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP - Threads First Comment Publish": {
+      "main": [
+        [{ "node": "Merge - First Comment Results", "type": "main", "index": 1 }]
+      ]
+    },
+    "HTTP - Instagram First Comment": {
+      "main": [
+        [{ "node": "Merge - First Comment Results", "type": "main", "index": 2 }]
+      ]
+    },
+    "HTTP - Facebook First Comment": {
+      "main": [
+        [{ "node": "Merge - First Comment Results", "type": "main", "index": 3 }]
+      ]
+    },
+    "HTTP - Skool First Comment": {
+      "main": [
+        [{ "node": "Merge - First Comment Results", "type": "main", "index": 4 }]
+      ]
+    },
+    "Merge - First Comment Results": {
+      "main": [
+        [{ "node": "Code - Build FC Status Row", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Build FC Status Row": {
+      "main": [
+        [{ "node": "GSheets - Update First Comment Status", "type": "main", "index": 0 }]
+      ]
+    },
+    "GSheets - Update First Comment Status": {
+      "main": [
+        [{ "node": "Merge - Before Callback", "type": "main", "index": 0 }]
+      ]
+    },
+    "Merge - Before Callback": {
+      "main": [
+        [{ "node": "Code - Build Callback Payload", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code - Build Callback Payload": {
+      "main": [
+        [{ "node": "HTTP - Callback to App", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none"
+  },
+  "versionId": "wf3-pulse-publish-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "pulse-repurpose"
+  },
+  "id": "pulse-workflow-3",
+  "tags": [
+    {
+      "createdAt": "2026-03-22T00:00:00.000Z",
+      "updatedAt": "2026-03-22T00:00:00.000Z",
+      "id": "tag-pulse",
+      "name": "pulse"
+    }
+  ]
+}

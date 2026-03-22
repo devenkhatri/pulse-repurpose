@@ -1,0 +1,305 @@
+{
+  "name": "Pulse - Image Repurpose",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 🖼️ Pulse — Image Repurpose  (Workflow 2)\n\nReceives **pre-built image prompt objects** from the Pulse app (one per platform) and generates platform-sized images using **ImageRouter** (OpenAI-compatible image generation API).\n\n**Flow:** Webhook → split by platform → call ImageRouter (`/images/generations`) → extract URL → write `_image_url` + `_image_prompt` to Sheet → callback to app\n\n**Webhook path:** `pulse-image-repurpose`  |  **Method:** POST\n\n**Input payload:**\n```\n{\n  postId: string,\n  imagePayloads: {\n    twitter: { prompt, sourceImageUrl, styleDirectives: { width, height, ... }, negativePrompt },\n    instagram: { ... },\n    ...platforms\n  },\n  callbackUrl: string\n}\n```\n\nThe app's image skill files handle all prompt engineering including brand kit, visual style, and platform aspect ratios.",
+        "height": 200,
+        "width": 1600,
+        "color": 0
+      },
+      "id": "wf2-sticky-01-overview",
+      "name": "Sticky Note — Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, -260]
+    },
+    {
+      "parameters": {
+        "content": "## ⚙️ Setup — Do This First\n\n**Step 1 — ImageRouter credential**\nCreate a **Header Auth** credential:\n- Name: `Authorization`\n- Value: `Bearer YOUR_IMAGEROUTER_API_KEY`\n\nOpen `HTTP - ImageRouter Generate` → Credential → select it.\n\n**Step 2 — Change model (optional)**\nIn the request body, `\"model\"` defaults to `gpt-image-1`.\nOther options depending on your ImageRouter plan:\n- `dall-e-3`\n- `stability-ai/stable-diffusion-xl`\n- `black-forest-labs/flux-1.1-pro`\n\n**Step 3 — Image size format**\nImageRouter uses `\"size\": \"WxH\"` (e.g. `\"1080x1080\"`).\nThe workflow builds this from `styleDirectives.width` × `styleDirectives.height` in the payload. Adjust if your provider uses a different format.\n\n**Step 4 — Google Sheets**\nIn `GSheets - Write Image URL`:\n- Replace `YOUR_SPREADSHEET_ID`\n- Set correct sheet tab name\n- Select your Google OAuth2 credential\n\n**Step 5 — Activate** after setup.",
+        "height": 540,
+        "width": 380,
+        "color": 3
+      },
+      "id": "wf2-sticky-02-setup",
+      "name": "Sticky Note — Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-210, 140]
+    },
+    {
+      "parameters": {
+        "content": "## 🔀 Split by Platform\n\nSplits `imagePayloads` into **one n8n item per platform**. Each item carries:\n- `postId` — to match the Sheet row\n- `platform` — to know which column to update\n- `prompt` — the full fal.ai/ImageRouter prompt\n- `sourceImageUrl` — optional reference image\n- `styleDirectives` — aspect ratio, width, height, mood, etc.\n- `negativePrompt` — what to avoid\n- `callbackUrl` — for the final callback\n\nPlatforms without an image payload are silently skipped.",
+        "height": 240,
+        "width": 440,
+        "color": 4
+      },
+      "id": "wf2-sticky-03-split",
+      "name": "Sticky Note — Split Logic",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [420, 500]
+    },
+    {
+      "parameters": {
+        "content": "## 🎨 ImageRouter API Node\n\nCalls the **OpenAI-compatible** image generation endpoint:\n`https://api.imagerouter.io/v1/openai/images/generations`\n\n**Request body:**\n```json\n{\n  \"model\": \"gpt-image-1\",\n  \"prompt\": \"<full prompt> --no <negativePrompt>\",\n  \"n\": 1,\n  \"size\": \"1080x1080\",\n  \"quality\": \"high\",\n  \"response_format\": \"url\"\n}\n```\n\n**Timeout:** 120 s — image generation is slow.\n\nThe response URL is a temporary CDN link. If you need permanent storage, add an HTTP Request node to upload the image to your own storage (S3, Cloudinary, etc.) before writing to the Sheet.",
+        "height": 300,
+        "width": 480,
+        "color": 4
+      },
+      "id": "wf2-sticky-04-imagerouter",
+      "name": "Sticky Note — ImageRouter",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [640, 500]
+    },
+    {
+      "parameters": {
+        "content": "## 💾 Write Image URL to Sheet\n\nUses conditional expressions so only the **active platform's** columns are updated:\n```\n\"twitter_image_url\": \"={{ $json.platform === 'twitter' ? $json.imageUrl : undefined }}\"\n```\nAlso writes `_image_prompt` for audit/debugging.\n\nMatches on `post_id` — never creates a new row.",
+        "height": 200,
+        "width": 440,
+        "color": 4
+      },
+      "id": "wf2-sticky-05-gsheets",
+      "name": "Sticky Note — GSheets Write",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1080, 500]
+    },
+    {
+      "parameters": {
+        "content": "## 📞 Callback to App\n\nAfter all platform images are written, sends a single callback to `callbackUrl` (the Pulse app's `/api/callback/images` endpoint).\n\n**Success:** `{ postId, status: 'done' }`\n\nThe app re-fetches the post from the Sheet and updates `image_url` and `image_prompt` in the local content file frontmatter. The UI stops polling.",
+        "height": 180,
+        "width": 440,
+        "color": 4
+      },
+      "id": "wf2-sticky-06-callback",
+      "name": "Sticky Note — Callback",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1300, 500]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pulse-image-repurpose",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "wf2-n01-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "pulse-image-repurpose-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Split incoming imagePayloads into one item per platform\nconst { postId, imagePayloads, callbackUrl } = $input.first().json;\n\nif (!postId || !imagePayloads || !callbackUrl) {\n  throw new Error('Missing required fields: postId, imagePayloads, callbackUrl');\n}\n\nconst items = [];\nfor (const [platform, imgPayload] of Object.entries(imagePayloads)) {\n  if (!imgPayload || !imgPayload.prompt) {\n    console.log(`Skipping ${platform} - missing image prompt`);\n    continue;\n  }\n  items.push({\n    json: {\n      postId,\n      platform,\n      prompt: imgPayload.prompt,\n      sourceImageUrl: imgPayload.sourceImageUrl || null,\n      styleDirectives: imgPayload.styleDirectives || {\n        aspectRatio: '1:1',\n        width: 1080,\n        height: 1080,\n        mood: 'professional',\n        colorTone: 'neutral',\n        composition: 'centered',\n        textOverlay: false\n      },\n      negativePrompt: imgPayload.negativePrompt || 'text, watermark, blurry, low quality',\n      callbackUrl\n    }\n  });\n}\n\nif (items.length === 0) {\n  throw new Error('No valid platforms with image payloads found');\n}\n\nreturn items;\n"
+      },
+      "id": "wf2-n02-split-platforms",
+      "name": "Code - Split by Platform",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.imagerouter.io/v1/openai/images/generations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-image-1\",\n  \"prompt\": {{ JSON.stringify($json.prompt + (($json.negativePrompt && $json.negativePrompt.length > 0) ? ' --no ' + $json.negativePrompt : '')) }},\n  \"n\": 1,\n  \"size\": {{ JSON.stringify(($json.styleDirectives.width || 1080) + 'x' + ($json.styleDirectives.height || 1080)) }},\n  \"quality\": \"high\",\n  \"response_format\": \"url\"\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "wf2-n03-imagerouter",
+      "name": "HTTP - ImageRouter Generate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_IMAGEROUTER_CREDENTIAL_ID",
+          "name": "ImageRouter API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract image URL from ImageRouter response\nconst postId = $('Code - Split by Platform').item.json.postId;\nconst platform = $('Code - Split by Platform').item.json.platform;\nconst prompt = $('Code - Split by Platform').item.json.prompt;\nconst callbackUrl = $('Code - Split by Platform').item.json.callbackUrl;\n\nconst response = $json;\n\n// ImageRouter (OpenAI-compatible) returns data[0].url\nconst imageUrl = response?.data?.[0]?.url || response?.data?.[0]?.b64_json || null;\n\nif (!imageUrl) {\n  throw new Error(`ImageRouter returned no image URL for platform: ${platform}`);\n}\n\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    postId,\n    platform,\n    imageUrl,\n    imagePrompt: prompt,\n    callbackUrl,\n    generatedAt: now\n  }\n}];\n"
+      },
+      "id": "wf2-n04-extract-url",
+      "name": "Code - Extract Image URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "post_id": "={{ $json.postId }}",
+            "twitter_image_url": "={{ $json.platform === 'twitter' ? $json.imageUrl : undefined }}",
+            "twitter_image_prompt": "={{ $json.platform === 'twitter' ? $json.imagePrompt : undefined }}",
+            "threads_image_url": "={{ $json.platform === 'threads' ? $json.imageUrl : undefined }}",
+            "threads_image_prompt": "={{ $json.platform === 'threads' ? $json.imagePrompt : undefined }}",
+            "instagram_image_url": "={{ $json.platform === 'instagram' ? $json.imageUrl : undefined }}",
+            "instagram_image_prompt": "={{ $json.platform === 'instagram' ? $json.imagePrompt : undefined }}",
+            "facebook_image_url": "={{ $json.platform === 'facebook' ? $json.imageUrl : undefined }}",
+            "facebook_image_prompt": "={{ $json.platform === 'facebook' ? $json.imagePrompt : undefined }}",
+            "skool_image_url": "={{ $json.platform === 'skool' ? $json.imageUrl : undefined }}",
+            "skool_image_prompt": "={{ $json.platform === 'skool' ? $json.imagePrompt : undefined }}"
+          },
+          "matchingColumns": ["post_id"],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "wf2-n05-gsheets-update",
+      "name": "GSheets - Write Image URL",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [1120, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Aggregate all platform image results and prepare callback\nconst items = $input.all();\nconst postId = items[0]?.json?.postId || '';\nlet callbackUrl = '';\ntry {\n  callbackUrl = $('Code - Extract Image URL').all()[0]?.json?.callbackUrl || '';\n} catch(e) {\n  callbackUrl = $('Webhook').first().json.callbackUrl || '';\n}\n\nreturn [{\n  json: {\n    postId,\n    callbackUrl,\n    status: 'done',\n    processedPlatforms: items.length\n  }\n}];\n"
+      },
+      "id": "wf2-n06-aggregate",
+      "name": "Code - Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"postId\": {{ JSON.stringify($json.postId) }},\n  \"status\": \"done\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "wf2-n07-callback-success",
+      "name": "HTTP - Callback Success",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code - Split by Platform",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Split by Platform": {
+      "main": [
+        [
+          {
+            "node": "HTTP - ImageRouter Generate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - ImageRouter Generate": {
+      "main": [
+        [
+          {
+            "node": "Code - Extract Image URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Extract Image URL": {
+      "main": [
+        [
+          {
+            "node": "GSheets - Write Image URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GSheets - Write Image URL": {
+      "main": [
+        [
+          {
+            "node": "Code - Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Callback Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none"
+  },
+  "versionId": "wf2-pulse-image-repurpose-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "pulse-repurpose"
+  },
+  "id": "pulse-workflow-2",
+  "tags": [
+    {
+      "createdAt": "2026-03-22T00:00:00.000Z",
+      "updatedAt": "2026-03-22T00:00:00.000Z",
+      "id": "tag-pulse",
+      "name": "pulse"
+    }
+  ]
+}

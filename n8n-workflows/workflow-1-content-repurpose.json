@@ -1,0 +1,373 @@
+{
+  "name": "Pulse - Content Repurpose",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## ✍️ Pulse — Content Repurpose  (Workflow 1)\n\nReceives **pre-built per-platform AI prompts** from the Pulse app and generates platform-adapted text for each social network using **OpenRouter**.\n\n**Flow:** Webhook → split by platform → call OpenRouter (system + user prompt pair) → parse text + hashtags → write to Google Sheet → callback to app\n\n**Webhook path:** `pulse-content-repurpose`  |  **Method:** POST\n\n**Input payload:** `{ postId, contentPrompts: { twitter: { systemPrompt, userPrompt, context }, ... }, callbackUrl }`\n\n**Output:** Each platform's `_text`, `_hashtags`, `_status`, `_generated_at` columns are written to the Sheet. The app polls the Sheet every 3 s until it sees the updated values.",
+        "height": 170,
+        "width": 1600,
+        "color": 0
+      },
+      "id": "wf1-sticky-01-overview",
+      "name": "Sticky Note — Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, -230]
+    },
+    {
+      "parameters": {
+        "content": "## ⚙️ Setup — Do This First\n\n**Step 1 — OpenRouter credential**\nCreate a **Header Auth** credential:\n- Name: `Authorization`\n- Value: `Bearer YOUR_OPENROUTER_API_KEY`\n\nOpen `HTTP - OpenRouter AI` node → Credential → select it.\n\n**Step 2 — Change model (optional)**\nIn the `HTTP - OpenRouter AI` node body, `\"model\"` defaults to `openrouter/auto`.\nReplace with a specific model e.g.:\n- `anthropic/claude-3-5-sonnet`\n- `openai/gpt-4o`\n- `meta-llama/llama-3.1-70b-instruct`\n\n**Step 3 — Google Sheets**\nIn `GSheets - Write Generated Text`:\n- Replace `YOUR_SPREADSHEET_ID`\n- Set correct sheet tab name\n- Select your Google OAuth2 credential\n\n**Step 4 — Activate**\nToggle ON after setup.",
+        "height": 440,
+        "width": 380,
+        "color": 3
+      },
+      "id": "wf1-sticky-02-setup",
+      "name": "Sticky Note — Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-210, 160]
+    },
+    {
+      "parameters": {
+        "content": "## 🔀 Split by Platform\n\nThe app sends **all platforms at once** in a single `contentPrompts` object. This Code node splits them into **one n8n item per platform** (e.g. 5 items for twitter/threads/instagram/facebook/skool).\n\nEach item carries: `postId` · `platform` · `systemPrompt` · `userPrompt` · `context` · `callbackUrl`\n\nDownstream nodes process each item independently — OpenRouter is called once per platform.",
+        "height": 180,
+        "width": 440,
+        "color": 4
+      },
+      "id": "wf1-sticky-03-split",
+      "name": "Sticky Note — Split Logic",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [420, 480]
+    },
+    {
+      "parameters": {
+        "content": "## 🤖 OpenRouter AI Node\n\nCalls `https://openrouter.ai/api/v1/chat/completions` with the **pre-built** system + user prompt pair from the Pulse app's platform skill files.\n\nThe app's skill files handle all prompt engineering (brand voice, platform rules, hashtag instructions, learnings). This node just executes the call.\n\n**Timeout:** 60 s — some models are slow on cold starts.",
+        "height": 180,
+        "width": 440,
+        "color": 4
+      },
+      "id": "wf1-sticky-04-openrouter",
+      "name": "Sticky Note — OpenRouter",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [640, 480]
+    },
+    {
+      "parameters": {
+        "content": "## 📊 Parse AI Response\n\nExtracts `choices[0].message.content` from the OpenRouter response.\n\nHashtag extraction: finds all `#word` matches in the generated text using regex, deduplicates them, and stores both the **full text** (including hashtags inline) and the **hashtags array** separately.\n\n`generatedAt` is set to the current ISO timestamp.",
+        "height": 180,
+        "width": 440,
+        "color": 4
+      },
+      "id": "wf1-sticky-05-parse",
+      "name": "Sticky Note — Parse",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [860, 480]
+    },
+    {
+      "parameters": {
+        "content": "## 📝 Write to Google Sheet\n\nUses `defineBelow` mapping mode with conditional expressions:\n```\n\"twitter_text\": \"={{ $json.platform === 'twitter' ? $json.text : undefined }}\"\n```\nOnly the active platform's columns are updated. Other platform columns are untouched because `undefined` values are skipped by the GSheets node.\n\nMatches on `post_id` — never creates a new row.",
+        "height": 200,
+        "width": 440,
+        "color": 4
+      },
+      "id": "wf1-sticky-06-gsheets",
+      "name": "Sticky Note — GSheets Write",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1080, 480]
+    },
+    {
+      "parameters": {
+        "content": "## 📞 Callback to App\n\nAfter **all platforms** are written to the Sheet, a single callback is sent to `callbackUrl` (the Pulse app's `/api/callback/repurpose` endpoint).\n\n**Success:** `{ postId, status: 'done' }`\n\nThe app invalidates its cache and re-fetches the post from the Sheet to get the newly generated text. The UI stops its 3-second polling loop.\n\n**On error:** The error handler Code node catches failures and sends `{ postId, status: 'failed', error: '...' }` so the app can show the user a retry option.",
+        "height": 240,
+        "width": 460,
+        "color": 4
+      },
+      "id": "wf1-sticky-07-callback",
+      "name": "Sticky Note — Callback",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1300, 480]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pulse-content-repurpose",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "wf1-n01-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "pulse-content-repurpose-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Split incoming contentPrompts into one item per platform\nconst { postId, contentPrompts, callbackUrl } = $input.first().json;\n\nif (!postId || !contentPrompts || !callbackUrl) {\n  throw new Error('Missing required fields: postId, contentPrompts, callbackUrl');\n}\n\nconst items = [];\nfor (const [platform, prompts] of Object.entries(contentPrompts)) {\n  if (!prompts || !prompts.systemPrompt || !prompts.userPrompt) {\n    console.log(`Skipping ${platform} - missing systemPrompt or userPrompt`);\n    continue;\n  }\n  items.push({\n    json: {\n      postId,\n      platform,\n      systemPrompt: prompts.systemPrompt,\n      userPrompt: prompts.userPrompt,\n      context: prompts.context || {},\n      callbackUrl\n    }\n  });\n}\n\nif (items.length === 0) {\n  throw new Error('No valid platforms with content prompts found');\n}\n\nreturn items;\n"
+      },
+      "id": "wf1-n02-split-platforms",
+      "name": "Code - Split by Platform",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "HTTP-Referer",
+              "value": "https://pulse.devengoratela.in"
+            },
+            {
+              "name": "X-Title",
+              "value": "Pulse Repurpose"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"openrouter/auto\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": {{ JSON.stringify($json.systemPrompt) }}\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify($json.userPrompt) }}\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_tokens\": 2000\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "wf1-n03-openrouter",
+      "name": "HTTP - OpenRouter AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_OPENROUTER_CREDENTIAL_ID",
+          "name": "OpenRouter API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI response and extract text + hashtags\nconst postId = $('Code - Split by Platform').item.json.postId;\nconst platform = $('Code - Split by Platform').item.json.platform;\nconst callbackUrl = $('Code - Split by Platform').item.json.callbackUrl;\nconst context = $('Code - Split by Platform').item.json.context || {};\n\nconst response = $json;\nconst content = response?.choices?.[0]?.message?.content || '';\n\nif (!content) {\n  throw new Error(`OpenRouter returned empty content for ${platform}`);\n}\n\n// Extract hashtags (lines starting with # or words starting with #)\nconst hashtagMatches = content.match(/#[\\w]+/g) || [];\nconst hashtags = [...new Set(hashtagMatches.map(h => h.replace('#', '').toLowerCase()))];\n\n// Remove hashtag lines from the main text body for cleaner output\nconst text = content.trim();\n\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    postId,\n    platform,\n    callbackUrl,\n    text,\n    hashtags,\n    status: 'pending',\n    generatedAt: now\n  }\n}];\n"
+      },
+      "id": "wf1-n04-parse-ai",
+      "name": "Code - Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "post_id": "={{ $json.postId }}",
+            "twitter_text": "={{ $json.platform === 'twitter' ? $json.text : undefined }}",
+            "twitter_hashtags": "={{ $json.platform === 'twitter' ? $json.hashtags.join(',') : undefined }}",
+            "twitter_status": "={{ $json.platform === 'twitter' ? $json.status : undefined }}",
+            "twitter_generated_at": "={{ $json.platform === 'twitter' ? $json.generatedAt : undefined }}",
+            "threads_text": "={{ $json.platform === 'threads' ? $json.text : undefined }}",
+            "threads_hashtags": "={{ $json.platform === 'threads' ? $json.hashtags.join(',') : undefined }}",
+            "threads_status": "={{ $json.platform === 'threads' ? $json.status : undefined }}",
+            "threads_generated_at": "={{ $json.platform === 'threads' ? $json.generatedAt : undefined }}",
+            "instagram_text": "={{ $json.platform === 'instagram' ? $json.text : undefined }}",
+            "instagram_hashtags": "={{ $json.platform === 'instagram' ? $json.hashtags.join(',') : undefined }}",
+            "instagram_status": "={{ $json.platform === 'instagram' ? $json.status : undefined }}",
+            "instagram_generated_at": "={{ $json.platform === 'instagram' ? $json.generatedAt : undefined }}",
+            "facebook_text": "={{ $json.platform === 'facebook' ? $json.text : undefined }}",
+            "facebook_hashtags": "={{ $json.platform === 'facebook' ? $json.hashtags.join(',') : undefined }}",
+            "facebook_status": "={{ $json.platform === 'facebook' ? $json.status : undefined }}",
+            "facebook_generated_at": "={{ $json.platform === 'facebook' ? $json.generatedAt : undefined }}",
+            "skool_text": "={{ $json.platform === 'skool' ? $json.text : undefined }}",
+            "skool_hashtags": "={{ $json.platform === 'skool' ? $json.hashtags.join(',') : undefined }}",
+            "skool_status": "={{ $json.platform === 'skool' ? $json.status : undefined }}",
+            "skool_generated_at": "={{ $json.platform === 'skool' ? $json.generatedAt : undefined }}"
+          },
+          "matchingColumns": ["post_id"],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "wf1-n05-gsheets-update",
+      "name": "GSheets - Write Generated Text",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [1120, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Aggregate all platform results and prepare callback\nconst items = $input.all();\nconst postId = items[0]?.json?.postId || items[0]?.json?.post_id || '';\nconst callbackUrl = $('Code - Parse AI Response').all()[0]?.json?.callbackUrl || '';\n\nreturn [{\n  json: {\n    postId,\n    callbackUrl,\n    status: 'done',\n    processedPlatforms: items.length\n  }\n}];\n"
+      },
+      "id": "wf1-n06-aggregate",
+      "name": "Code - Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"postId\": {{ JSON.stringify($json.postId) }},\n  \"status\": \"done\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "wf1-n07-callback-success",
+      "name": "HTTP - Callback Success",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build error callback payload\nconst inputData = $input.first().json || {};\n// Try to get callbackUrl from the original webhook data\nlet callbackUrl = '';\nlet postId = '';\ntry {\n  callbackUrl = $('Webhook').first().json.callbackUrl || '';\n  postId = $('Webhook').first().json.postId || '';\n} catch(e) {}\n\nreturn [{\n  json: {\n    postId,\n    callbackUrl,\n    status: 'failed',\n    error: inputData.error?.message || 'Content generation failed'\n  }\n}];\n"
+      },
+      "id": "wf1-n08-error-handler",
+      "name": "Code - Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"postId\": {{ JSON.stringify($json.postId) }},\n  \"status\": \"failed\",\n  \"error\": {{ JSON.stringify($json.error) }}\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "wf1-n09-callback-error",
+      "name": "HTTP - Callback Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 500]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code - Split by Platform",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Split by Platform": {
+      "main": [
+        [
+          {
+            "node": "HTTP - OpenRouter AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - OpenRouter AI": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "GSheets - Write Generated Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GSheets - Write Generated Text": {
+      "main": [
+        [
+          {
+            "node": "Code - Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Callback Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "errorWorkflow": "",
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "errorWorkflow": ""
+  },
+  "versionId": "wf1-pulse-content-repurpose-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "pulse-repurpose"
+  },
+  "id": "pulse-workflow-1",
+  "tags": [
+    {
+      "createdAt": "2026-03-22T00:00:00.000Z",
+      "updatedAt": "2026-03-22T00:00:00.000Z",
+      "id": "tag-pulse",
+      "name": "pulse"
+    }
+  ]
+}

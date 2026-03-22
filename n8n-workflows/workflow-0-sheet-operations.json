@@ -1,0 +1,329 @@
+{
+  "name": "Pulse - Sheet Operations",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 🗂️ Pulse — Sheet Operations  (Workflow 0)\n\nCentral data layer for **all Google Sheets read/write operations**. Every other Pulse workflow calls this webhook — never writes to the Sheet directly. This keeps all column-mapping logic in one place.\n\n**Webhook path:** `pulse-sheet-ops`  |  **Method:** POST  |  Two response types: JSON data (reads) · `{ success: true }` (writes)\n\n**Supported actions:** `GET_ALL_POSTS` · `GET_POST_BY_ID` · `UPDATE_PLATFORM_VARIANT` · `UPDATE_MULTIPLE_PLATFORMS` · `WRITE_CONTENT_PROMPTS` · `WRITE_IMAGE_PROMPTS` · `UPDATE_STATUS` · `UPDATE_ANALYTICS` · `UPDATE_FIRST_COMMENT`",
+        "height": 150,
+        "width": 1380,
+        "color": 0
+      },
+      "id": "wf0-sticky-01-overview",
+      "name": "Sticky Note — Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, -220]
+    },
+    {
+      "parameters": {
+        "content": "## ⚙️ Setup — Do This First\n\n**Step 1 — Google Sheets credential**\nOpen each `GSheets` node → Credential → select (or create) your **Google Sheets OAuth2** account.\n\n**Step 2 — Spreadsheet ID**\nIn both GSheets nodes replace `YOUR_SPREADSHEET_ID` with the ID from your Sheet URL:\n`docs.google.com/spreadsheets/d/`**`PASTE_ID_HERE`**`/edit`\n\n**Step 3 — Sheet tab name**\nChange `Sheet1` to your actual tab name (default is `Sheet1`).\n\n**Step 4 — Row 1 headers**\nRow 1 of your Sheet must contain all **94 column headers** in exact order. See `README.md` for the full comma-separated list.\n\n**Step 5 — Activate**\nToggle the workflow ON after setup.",
+        "height": 400,
+        "width": 380,
+        "color": 3
+      },
+      "id": "wf0-sticky-02-setup",
+      "name": "Sticky Note — Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-210, 140]
+    },
+    {
+      "parameters": {
+        "content": "## 📖 READ path\nTriggers: `GET_ALL_POSTS` and `GET_POST_BY_ID`\n\nReads **all rows** from the Sheet, then the Code node:\n- Converts `snake_case` columns → `camelCase` app fields\n- Splits `twitter_hashtags` (CSV string) → `string[]`\n- Casts analytics strings → `number | null`\n- Filters by `statusFilter` / `platformFilter` / date range *(GET_ALL_POSTS)*\n- Finds single row by `post_id` *(GET_POST_BY_ID)*",
+        "height": 200,
+        "width": 640,
+        "color": 4
+      },
+      "id": "wf0-sticky-03-read",
+      "name": "Sticky Note — Read Path",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [640, 40]
+    },
+    {
+      "parameters": {
+        "content": "## ✏️ WRITE path\nTriggers: all 7 `UPDATE_*` / `WRITE_*` actions\n\nThe **Prepare Write Row** Code node:\n- Reads `action` + `payload` from the webhook body\n- Builds a flat row object with **only** the columns to change\n- Always includes `post_id` so the GSheets Update node can find the right row\n\nThe GSheets **Update** node matches on `post_id` and overwrites only the supplied columns. **No new rows are ever created.**\n\nHashtag arrays are joined to CSV before writing (e.g. `['ai','build']` → `'ai,build'`).",
+        "height": 200,
+        "width": 640,
+        "color": 4
+      },
+      "id": "wf0-sticky-04-write",
+      "name": "Sticky Note — Write Path",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [640, 560]
+    },
+    {
+      "parameters": {
+        "content": "## 🔑 Column mapping reference\n\nAll 94 columns follow the pattern:\n`{platform}_{field}` e.g. `twitter_text`, `instagram_status`, `facebook_engagement_rate`\n\n**Platforms:** `twitter` · `threads` · `instagram` · `facebook` · `skool`\n\n**Per-platform fields (×5 platforms = 45 cols):**\n`_text` · `_content_prompt` · `_image_prompt` · `_image_url` · `_hashtags` · `_status` · `_generated_at` · `_scheduled_at` · `_published_at`\n\n**Analytics (×5 = 35 cols):**\n`_platform_post_id` · `_impressions` · `_likes` · `_comments` · `_shares` · `_engagement_rate` · `_fetched_at`\n\n**First comment (×5 = 10 cols):**\n`_first_comment` · `_first_comment_status`\n\n**Plus 4 base cols:** `post_id` · `linkedin_text` · `linkedin_image_url` · `posted_at`",
+        "height": 360,
+        "width": 380,
+        "color": 0
+      },
+      "id": "wf0-sticky-05-columns",
+      "name": "Sticky Note — Column Reference",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1160, 40]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pulse-sheet-ops",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wf0-n01-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "pulse-sheet-ops-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-get-all",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "GET_ALL_POSTS",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "cond-get-by-id",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "GET_POST_BY_ID",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "wf0-n02-if-read",
+      "name": "Is Read Action?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "filtersUI": {},
+        "options": {
+          "returnAllMatchingRows": true
+        }
+      },
+      "id": "wf0-n03-gsheets-read",
+      "name": "GSheets - Read All Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [680, 180],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const webhookData = $('Webhook').first().json;\nconst action = webhookData.action;\nconst payload = webhookData.payload || {};\nconst rows = $input.all();\n\nconst PLATFORMS = ['twitter', 'threads', 'instagram', 'facebook', 'skool'];\n\nfunction toNum(val) {\n  if (val === '' || val === null || val === undefined) return null;\n  const n = Number(val);\n  return isNaN(n) ? null : n;\n}\n\nfunction toArr(val) {\n  if (!val || val.trim() === '') return [];\n  return val.split(',').map(h => h.trim()).filter(Boolean);\n}\n\nfunction buildPost(d) {\n  const platforms = {};\n  for (const p of PLATFORMS) {\n    platforms[p] = {\n      text: d[`${p}_text`] || null,\n      contentPrompt: d[`${p}_content_prompt`] || null,\n      imagePrompt: d[`${p}_image_prompt`] || null,\n      imageUrl: d[`${p}_image_url`] || null,\n      hashtags: toArr(d[`${p}_hashtags`]),\n      status: d[`${p}_status`] || 'pending',\n      generatedAt: d[`${p}_generated_at`] || null,\n      scheduledAt: d[`${p}_scheduled_at`] || null,\n      publishedAt: d[`${p}_published_at`] || null,\n      platformPostId: d[`${p}_platform_post_id`] || null,\n      impressions: toNum(d[`${p}_impressions`]),\n      likes: toNum(d[`${p}_likes`]),\n      comments: toNum(d[`${p}_comments`]),\n      shares: toNum(d[`${p}_shares`]),\n      engagementRate: toNum(d[`${p}_engagement_rate`]),\n      fetchedAt: d[`${p}_fetched_at`] || null,\n      firstComment: d[`${p}_first_comment`] || null,\n      firstCommentStatus: d[`${p}_first_comment_status`] || null\n    };\n  }\n  return {\n    id: String(d.post_id || ''),\n    linkedinText: d.linkedin_text || '',\n    linkedinImageUrl: d.linkedin_image_url || null,\n    postedAt: d.posted_at || '',\n    platforms\n  };\n}\n\nlet posts = rows\n  .map(r => buildPost(r.json))\n  .filter(p => p.id && p.id !== '');\n\nif (action === 'GET_ALL_POSTS') {\n  if (payload.statusFilter) {\n    posts = posts.filter(p =>\n      Object.values(p.platforms).some(v => v.status === payload.statusFilter)\n    );\n  }\n  if (payload.platformFilter) {\n    posts = posts.filter(p => !!p.platforms[payload.platformFilter]);\n  }\n  if (payload.fromDate) {\n    posts = posts.filter(p => p.postedAt >= payload.fromDate);\n  }\n  if (payload.toDate) {\n    posts = posts.filter(p => p.postedAt <= payload.toDate);\n  }\n  return [{ json: { posts } }];\n} else if (action === 'GET_POST_BY_ID') {\n  const post = posts.find(p => p.id === String(payload.postId)) || null;\n  return [{ json: { post } }];\n}\n\nreturn [{ json: { posts: [] } }];\n"
+      },
+      "id": "wf0-n04-process-read",
+      "name": "Code - Process Read Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 180]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "wf0-n05-respond-read",
+      "name": "Respond - Read",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1120, 180]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { action, payload } = $input.first().json;\nconst now = new Date().toISOString();\nconst row = {};\n\nif (action === 'UPDATE_PLATFORM_VARIANT') {\n  const { postId, platform, variant } = payload;\n  row.post_id = String(postId);\n  const p = platform;\n  if (variant.text !== undefined) row[`${p}_text`] = variant.text ?? '';\n  if (variant.contentPrompt !== undefined) row[`${p}_content_prompt`] = variant.contentPrompt ?? '';\n  if (variant.imagePrompt !== undefined) row[`${p}_image_prompt`] = variant.imagePrompt ?? '';\n  if (variant.imageUrl !== undefined) row[`${p}_image_url`] = variant.imageUrl ?? '';\n  if (variant.hashtags !== undefined) row[`${p}_hashtags`] = Array.isArray(variant.hashtags) ? variant.hashtags.join(',') : (variant.hashtags || '');\n  if (variant.status !== undefined) row[`${p}_status`] = variant.status;\n  if (variant.generatedAt !== undefined) row[`${p}_generated_at`] = variant.generatedAt ?? '';\n  if (variant.scheduledAt !== undefined) row[`${p}_scheduled_at`] = variant.scheduledAt ?? '';\n  if (variant.publishedAt !== undefined) row[`${p}_published_at`] = variant.publishedAt ?? '';\n  if (variant.platformPostId !== undefined) row[`${p}_platform_post_id`] = variant.platformPostId ?? '';\n  if (variant.firstComment !== undefined) row[`${p}_first_comment`] = variant.firstComment ?? '';\n  if (variant.firstCommentStatus !== undefined) row[`${p}_first_comment_status`] = variant.firstCommentStatus ?? '';\n}\n\nelse if (action === 'UPDATE_MULTIPLE_PLATFORMS') {\n  const { postId, variants } = payload;\n  row.post_id = String(postId);\n  for (const [platform, variant] of Object.entries(variants || {})) {\n    const p = platform;\n    if (variant.text !== undefined) row[`${p}_text`] = variant.text ?? '';\n    if (variant.contentPrompt !== undefined) row[`${p}_content_prompt`] = variant.contentPrompt ?? '';\n    if (variant.imagePrompt !== undefined) row[`${p}_image_prompt`] = variant.imagePrompt ?? '';\n    if (variant.imageUrl !== undefined) row[`${p}_image_url`] = variant.imageUrl ?? '';\n    if (variant.hashtags !== undefined) row[`${p}_hashtags`] = Array.isArray(variant.hashtags) ? variant.hashtags.join(',') : (variant.hashtags || '');\n    if (variant.status !== undefined) row[`${p}_status`] = variant.status;\n    if (variant.generatedAt !== undefined) row[`${p}_generated_at`] = variant.generatedAt ?? '';\n    if (variant.scheduledAt !== undefined) row[`${p}_scheduled_at`] = variant.scheduledAt ?? '';\n    if (variant.publishedAt !== undefined) row[`${p}_published_at`] = variant.publishedAt ?? '';\n    if (variant.platformPostId !== undefined) row[`${p}_platform_post_id`] = variant.platformPostId ?? '';\n    if (variant.firstComment !== undefined) row[`${p}_first_comment`] = variant.firstComment ?? '';\n    if (variant.firstCommentStatus !== undefined) row[`${p}_first_comment_status`] = variant.firstCommentStatus ?? '';\n  }\n}\n\nelse if (action === 'WRITE_CONTENT_PROMPTS') {\n  const { postId, prompts } = payload;\n  row.post_id = String(postId);\n  for (const [platform, prompt] of Object.entries(prompts || {})) {\n    row[`${platform}_content_prompt`] = prompt ?? '';\n  }\n}\n\nelse if (action === 'WRITE_IMAGE_PROMPTS') {\n  const { postId, prompts } = payload;\n  row.post_id = String(postId);\n  for (const [platform, prompt] of Object.entries(prompts || {})) {\n    row[`${platform}_image_prompt`] = prompt ?? '';\n  }\n}\n\nelse if (action === 'UPDATE_STATUS') {\n  const { postId, platform, status, publishedAt, error } = payload;\n  row.post_id = String(postId);\n  row[`${platform}_status`] = status;\n  if (publishedAt) row[`${platform}_published_at`] = publishedAt;\n}\n\nelse if (action === 'UPDATE_ANALYTICS') {\n  const { postId, platform, metrics } = payload;\n  row.post_id = String(postId);\n  if (metrics.platformPostId !== undefined) row[`${platform}_platform_post_id`] = metrics.platformPostId ?? '';\n  if (metrics.impressions !== undefined) row[`${platform}_impressions`] = metrics.impressions ?? 0;\n  if (metrics.likes !== undefined) row[`${platform}_likes`] = metrics.likes ?? 0;\n  if (metrics.comments !== undefined) row[`${platform}_comments`] = metrics.comments ?? 0;\n  if (metrics.shares !== undefined) row[`${platform}_shares`] = metrics.shares ?? 0;\n  if (metrics.engagementRate !== undefined) row[`${platform}_engagement_rate`] = metrics.engagementRate ?? 0;\n  if (metrics.fetchedAt !== undefined) row[`${platform}_fetched_at`] = metrics.fetchedAt ?? now;\n}\n\nelse if (action === 'UPDATE_FIRST_COMMENT') {\n  const { postId, platform, firstComment, firstCommentStatus } = payload;\n  row.post_id = String(postId);\n  row[`${platform}_first_comment`] = firstComment ?? '';\n  if (firstCommentStatus !== undefined) {\n    row[`${platform}_first_comment_status`] = firstCommentStatus ?? '';\n  }\n}\n\nreturn [{ json: row }];\n"
+      },
+      "id": "wf0-n06-prepare-write",
+      "name": "Code - Prepare Write Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 420]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": ["post_id"],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "wf0-n07-gsheets-update",
+      "name": "GSheets - Update Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [900, 420],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true }",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "wf0-n08-respond-write",
+      "name": "Respond - Write",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1120, 420]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Is Read Action?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Read Action?": {
+      "main": [
+        [
+          {
+            "node": "GSheets - Read All Rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code - Prepare Write Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GSheets - Read All Rows": {
+      "main": [
+        [
+          {
+            "node": "Code - Process Read Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Process Read Response": {
+      "main": [
+        [
+          {
+            "node": "Respond - Read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Prepare Write Row": {
+      "main": [
+        [
+          {
+            "node": "GSheets - Update Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GSheets - Update Row": {
+      "main": [
+        [
+          {
+            "node": "Respond - Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "wf0-pulse-sheet-ops-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "pulse-repurpose"
+  },
+  "id": "pulse-workflow-0",
+  "tags": [
+    {
+      "createdAt": "2026-03-22T00:00:00.000Z",
+      "updatedAt": "2026-03-22T00:00:00.000Z",
+      "id": "tag-pulse",
+      "name": "pulse"
+    }
+  ]
+}
