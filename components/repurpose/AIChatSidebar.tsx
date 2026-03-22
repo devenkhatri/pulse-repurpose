@@ -402,7 +402,7 @@ function DiffView({ oldText, newText }: { oldText: string; newText: string }) {
   if (!hasDiffs) return null
 
   return (
-    <div className="ml-7 bg-[#111111] border border-[#2A2A2A] rounded-lg p-2 text-[11px] leading-relaxed font-mono">
+    <div className="ml-7 bg-[#111111] border border-[#2A2A2A] rounded-lg p-2 text-[11px] leading-relaxed">
       <p className="text-[9px] text-[#555555] uppercase tracking-wider mb-1.5">Changes</p>
       <span>
         {tokens.map((token, i) => {
