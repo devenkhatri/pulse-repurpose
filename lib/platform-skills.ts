@@ -18,12 +18,15 @@ import { cacheGetOrSet } from "@/lib/cache"
 
 const FILE_TTL_MS = 5 * 60 * 1000
 
-// Model used for skill execution (content repurposing). These tasks require
-// long JSON output — free models with small context windows truncate mid-JSON.
-// Override via OPENROUTER_SKILL_MODEL. Defaults to gemini-flash which handles
-// 8k+ output tokens on the free tier reliably.
-const SKILL_MODEL =
-  process.env.OPENROUTER_SKILL_MODEL ?? "google/gemini-2.0-flash-exp:free"
+// Models tried in order for skill execution. All have 32k–262k output token capacity.
+// Primary can be overridden via OPENROUTER_SKILL_MODEL env var.
+// Fallbacks are tried automatically on 404 (model removed/unavailable).
+const SKILL_MODEL_CHAIN: string[] = [
+  process.env.OPENROUTER_SKILL_MODEL ?? "stepfun/step-3.5-flash:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "minimax/minimax-m2.5:free",
+  "liquid/lfm-2.5-1.2b-instruct:free",
+]
 import type {
   Platform,
   ContentPromptOutput,
@@ -186,25 +189,28 @@ function parseJsonResponse<T>(raw: string): T {
 // ---------------------------------------------------------------------------
 
 async function withRetry<T>(
-  fn: () => Promise<T>,
-  options: { maxRetries: number; delayMs: number } = { maxRetries: 2, delayMs: 1000 }
+  fn: (model: string) => Promise<T>,
+  options: { delayMs: number } = { delayMs: 1000 }
 ): Promise<T> {
   let lastError: Error | unknown
 
-  for (let attempt = 0; attempt <= options.maxRetries; attempt++) {
+  for (let i = 0; i < SKILL_MODEL_CHAIN.length; i++) {
+    const model = SKILL_MODEL_CHAIN[i]!
     try {
-      return await fn()
+      return await fn(model)
     } catch (error) {
       lastError = error
-
-      // Retry on all errors — parse failures from truncated output (finish_reason: length)
-      // can succeed on a retry with the correct model (SKILL_MODEL).
       const errorMessage = error instanceof Error ? error.message : String(error)
+      const is404 = errorMessage.includes("404") || errorMessage.includes("No endpoints found")
 
-      // Only retry on transient errors (network, provider issues)
-      if (attempt < options.maxRetries) {
+      if (is404 && i < SKILL_MODEL_CHAIN.length - 1) {
+        console.warn(`[platform-skills] Model ${model} unavailable (404), trying next fallback`)
+        continue
+      }
+
+      if (i < SKILL_MODEL_CHAIN.length - 1) {
         console.warn(
-          `[platform-skills] Attempt ${attempt + 1} failed, retrying in ${options.delayMs}ms:`,
+          `[platform-skills] Model ${model} failed, retrying with next in ${options.delayMs}ms:`,
           errorMessage
         )
         await new Promise((resolve) => setTimeout(resolve, options.delayMs))
@@ -250,7 +256,7 @@ With these inputs:
 
 Return the structured ContentPromptOutput object as specified in the skill file.`
 
-  const raw = await withRetry(() => executePrompt({ system, user, maxTokens: 4096, model: SKILL_MODEL }))
+  const raw = await withRetry((model) => executePrompt({ system, user, maxTokens: 4096, model }))
   return parseJsonResponse<ContentPromptOutput>(raw)
 }
 
@@ -291,6 +297,6 @@ With these inputs:
 
 Return the structured ImagePromptOutput object as specified in the skill file.`
 
-  const raw = await withRetry(() => executePrompt({ system, user, maxTokens: 4096, model: SKILL_MODEL }))
+  const raw = await withRetry((model) => executePrompt({ system, user, maxTokens: 4096, model }))
   return parseJsonResponse<ImagePromptOutput>(raw)
 }
