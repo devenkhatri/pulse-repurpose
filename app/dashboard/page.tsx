@@ -152,10 +152,22 @@ export default function DashboardPage() {
   const [statusFilter, setStatusFilter] = useState("all")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
+  const [recycledPostIds, setRecycledPostIds] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     fetchPosts()
   }, [fetchPosts])
+
+  useEffect(() => {
+    fetch("/api/evergreen")
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data.recycledPostIds)) {
+          setRecycledPostIds(new Set(data.recycledPostIds as string[]))
+        }
+      })
+      .catch(() => {}) // non-critical — silently ignore
+  }, [])
 
   const handleApprove = useCallback(
     async (postId: string, platform: Platform) => {
@@ -234,6 +246,7 @@ export default function DashboardPage() {
           onDateFromChange={setDateFrom}
           dateTo={dateTo}
           onDateToChange={setDateTo}
+          recycledPostIds={recycledPostIds}
         />
       </div>
     </div>

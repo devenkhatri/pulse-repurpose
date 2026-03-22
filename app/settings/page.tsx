@@ -5,6 +5,7 @@ import { TopBar } from "@/components/layout/TopBar"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { BrandVoiceForm } from "@/components/settings/BrandVoiceForm"
 import { HashtagBankManager } from "@/components/settings/HashtagBankManager"
+import { EvergreenForm } from "@/components/settings/EvergreenForm"
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner"
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog"
 import { useSettingsStore } from "@/stores/settingsStore"
@@ -102,6 +103,12 @@ export default function SettingsPage() {
                   </span>
                 )}
               </TabsTrigger>
+              <TabsTrigger
+                value="evergreen"
+                className="text-xs data-[state=active]:bg-[#7C3AED]/20 data-[state=active]:text-white"
+              >
+                ♻ Evergreen
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="brand-voice">
@@ -123,6 +130,10 @@ export default function SettingsPage() {
                   setHashtagBank(entries)
                 }
               />
+            </TabsContent>
+
+            <TabsContent value="evergreen">
+              <EvergreenForm />
             </TabsContent>
           </Tabs>
         )}

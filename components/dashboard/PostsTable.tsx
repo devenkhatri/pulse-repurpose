@@ -68,6 +68,7 @@ interface PostsTableProps {
   onDateFromChange: (v: string) => void
   dateTo: string
   onDateToChange: (v: string) => void
+  recycledPostIds?: Set<string>
 }
 
 export function PostsTable({
@@ -82,8 +83,10 @@ export function PostsTable({
   onDateFromChange,
   dateTo,
   onDateToChange,
+  recycledPostIds,
 }: PostsTableProps) {
   const [platformFilter, setPlatformFilter] = useState<string>("all")
+  const [showRecycledOnly, setShowRecycledOnly] = useState(false)
   const [selectedPost, setSelectedPost] = useState<LinkedInPost | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [sort, setSort] = useState<SortState>(loadSortFromStorage)
@@ -113,6 +116,8 @@ export function PostsTable({
 
   const filteredPosts = useMemo(() => {
     const afterFilter = posts.filter((post) => {
+      // Recycled filter
+      if (showRecycledOnly && !recycledPostIds?.has(post.id)) return false
       // Platform filter: show post if any platform variant matches
       if (platformFilter !== "all") {
         const variant = post.platforms[platformFilter as Platform]
@@ -246,7 +251,7 @@ export function PostsTable({
   }
 
   const anyFilterActive =
-    platformFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo || searchQuery
+    platformFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo || searchQuery || showRecycledOnly
 
   if (loading) {
     return (
@@ -296,6 +301,21 @@ export function PostsTable({
             </button>
           ))}
         </div>
+
+        {recycledPostIds && recycledPostIds.size > 0 && (
+          <button
+            onClick={() => setShowRecycledOnly((v) => !v)}
+            className={cn(
+              "px-3 py-1 rounded-full text-xs font-medium transition-colors",
+              showRecycledOnly
+                ? "bg-emerald-600/80 text-white"
+                : "bg-white/5 text-zinc-400 hover:text-white hover:bg-white/10"
+            )}
+            title="Show only recycled posts"
+          >
+            ♻ Recycled ({recycledPostIds.size})
+          </button>
+        )}
 
         <div className="flex items-center gap-2 ml-auto flex-wrap">
           {/* Status filter */}
@@ -348,6 +368,7 @@ export function PostsTable({
                 onDateFromChange("")
                 onDateToChange("")
                 setSearchQuery("")
+                setShowRecycledOnly(false)
               }}
             >
               Clear
@@ -472,6 +493,7 @@ export function PostsTable({
                     onClick={() => setSelectedPost(post)}
                     isSelected={selectedRows.has(post.id)}
                     onSelectChange={toggleSelectRow}
+                    isRecycled={recycledPostIds?.has(post.id) ?? false}
                   />
                 ))
               )}

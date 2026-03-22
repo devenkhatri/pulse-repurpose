@@ -239,4 +239,11 @@ export interface SheetActionPayload {
   }
 }
 
+export interface EvergreenConfig {
+  enabled: boolean
+  engagementThreshold: number   // Minimum engagement rate % to qualify (e.g. 3 = 3%)
+  recycleIntervalDays: number   // Days since published_at before eligible to recycle
+  platforms: Platform[]         // Which platforms to reset to approved on recycle
+}
+
 // Note: PlatformRule is defined and exported from lib/platform-rules.ts

@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import fs from "fs/promises"
 import path from "path"
-import { getAllPosts } from "@/lib/n8n-sheet"
+import { getAllPosts, updateMultiplePlatforms } from "@/lib/n8n-sheet"
 import { appendToMemory, appendToLearnings, rebuildHeartbeat } from "@/lib/docs-sync"
+import { getEvergreenConfig, markPostRecycled } from "@/lib/evergreen"
+import type { Platform, PlatformVariant } from "@/types"
 
 // ---------------------------------------------------------------------------
 // POST /api/cron
@@ -445,7 +447,86 @@ export async function POST(req: NextRequest) {
     console.error("[cron] Operation 9 failed:", msg)
   }
 
-  // ── Operation 10 — Completion log ─────────────────────────────────────────
+  // ── Operation 10 — Evergreen content recycling ───────────────────────────
+  try {
+    const evergreenConfig = await getEvergreenConfig()
+
+    if (!evergreenConfig.enabled) {
+      result.operations["op10_evergreen"] = "skipped"
+    } else {
+      const posts = await getAllPosts({})
+      const nowMs = startTime.getTime()
+      const intervalMs = evergreenConfig.recycleIntervalDays * 24 * 60 * 60 * 1000
+      const recyclePlatforms = evergreenConfig.platforms as Platform[]
+      let recycledCount = 0
+
+      for (const post of posts) {
+        // Compute average engagement rate across configured platforms that have analytics
+        const analyticsVariants = recyclePlatforms
+          .map((p) => post.platforms[p])
+          .filter((v): v is PlatformVariant => !!v && v.engagementRate != null)
+
+        if (analyticsVariants.length === 0) continue
+
+        const avgEngagement =
+          analyticsVariants.reduce((sum, v) => sum + (v.engagementRate ?? 0), 0) /
+          analyticsVariants.length
+
+        if (avgEngagement < evergreenConfig.engagementThreshold) continue
+
+        // Check that at least one configured platform was published and is old enough
+        const publishedVariants = recyclePlatforms
+          .map((p) => post.platforms[p])
+          .filter((v): v is PlatformVariant => !!v && v.status === "published" && !!v.publishedAt)
+
+        if (publishedVariants.length === 0) continue
+
+        const mostRecentPublished = Math.max(
+          ...publishedVariants.map((v) => new Date(v.publishedAt!).getTime())
+        )
+
+        if (nowMs - mostRecentPublished < intervalMs) continue
+
+        // Qualify — reset configured platforms to approved
+        const variants: Partial<Record<Platform, Partial<PlatformVariant>>> = {}
+        for (const platform of recyclePlatforms) {
+          const v = post.platforms[platform]
+          if (v && v.status === "published") {
+            variants[platform] = { status: "approved", approvedAt: startIso }
+          }
+        }
+
+        if (Object.keys(variants).length === 0) continue
+
+        await updateMultiplePlatforms(post.id, variants)
+        await markPostRecycled(post.id, startIso)
+        await appendToLearnings(
+          "evergreen",
+          `Recycled post ${post.id} — avg engagement ${avgEngagement.toFixed(1)}% ` +
+          `(threshold: ${evergreenConfig.engagementThreshold}%), ` +
+          `published ${Math.floor((nowMs - mostRecentPublished) / (24 * 60 * 60 * 1000))}d ago. ` +
+          `Platforms reset to approved: ${Object.keys(variants).join(", ")}.`
+        ).catch(() => {})
+
+        recycledCount++
+      }
+
+      if (recycledCount > 0) {
+        result.flags.push(
+          `Evergreen: recycled ${recycledCount} post${recycledCount !== 1 ? "s" : ""} back to approved`
+        )
+      }
+
+      result.operations["op10_evergreen"] = "completed"
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    result.operations["op10_evergreen"] = "failed"
+    result.errors.push(`Operation 10 (evergreen): ${msg}`)
+    console.error("[cron] Operation 10 failed:", msg)
+  }
+
+  // ── Completion log ─────────────────────────────────────────────────────────
   const endTime = new Date()
   const durationMs = endTime.getTime() - startTime.getTime()
   result.completed = endTime.toISOString()
@@ -460,7 +541,7 @@ export async function POST(req: NextRequest) {
     `\n## Heartbeat.md updated: ✓\n- Completed: ${endTime.toISOString()}\n- Duration: ${Math.round(durationMs / 1000)}s\n`
   ).catch(() => {})
 
-  result.operations["op10_completion"] = "completed"
+  result.operations["op_completion"] = "completed"
 
   return NextResponse.json(result)
 }

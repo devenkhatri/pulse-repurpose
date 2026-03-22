@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "engagementThreshold": 3,
+  "recycleIntervalDays": 30,
+  "platforms": ["twitter", "threads", "instagram", "facebook", "skool"]
+}

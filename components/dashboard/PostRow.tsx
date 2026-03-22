@@ -15,9 +15,10 @@ interface PostRowProps {
   onClick: () => void
   isSelected?: boolean
   onSelectChange?: (id: string, checked: boolean) => void
+  isRecycled?: boolean
 }
 
-export function PostRow({ post, onClick, isSelected, onSelectChange }: PostRowProps) {
+export function PostRow({ post, onClick, isSelected, onSelectChange, isRecycled }: PostRowProps) {
   const router = useRouter()
 
   return (
@@ -47,9 +48,20 @@ export function PostRow({ post, onClick, isSelected, onSelectChange }: PostRowPr
 
       {/* LinkedIn post preview */}
       <td className="px-4 py-3 max-w-xs">
-        <p className="text-sm text-zinc-200 line-clamp-2">
-          {truncate(post.linkedinText, 80)}
-        </p>
+        <div className="flex items-start gap-1.5">
+          {isRecycled && (
+            <span
+              className="flex-shrink-0 text-base leading-tight"
+              title="Recycled — re-queued from a top-performing post"
+              aria-label="Recycled post"
+            >
+              ♻
+            </span>
+          )}
+          <p className="text-sm text-zinc-200 line-clamp-2">
+            {truncate(post.linkedinText, 80)}
+          </p>
+        </div>
       </td>
 
       {/* Per-platform status badges */}
