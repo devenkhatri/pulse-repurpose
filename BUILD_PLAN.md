@@ -118,6 +118,83 @@ Three-column layout: source panel → platform cards → AI chat sidebar (chat s
 
 ---
 
+## Phase 2 — Gap Features (Industry Parity)
+
+Identified via gap analysis against Buffer, Taplio, Lately.ai, Repurpose.io (March 2026).
+Each session is self-contained and can be built independently after Session 11.
+
+---
+
+### Session 12 — Analytics Integration
+Pull real engagement metrics from published platforms via n8n and feed them back into the learning system.
+
+- **Google Sheet schema**: Add `[platform]_impressions`, `_likes`, `_comments`, `_shares`, `_engagement_rate`, `_fetched_at` columns per platform
+- **n8n Workflow 4**: Scheduled analytics fetch — calls platform APIs (Twitter, Instagram, Facebook) → writes to Sheet via `UPDATE_ANALYTICS` action
+- **New Sheet action**: `UPDATE_ANALYTICS` in `lib/n8n-sheet.ts`
+- **`lib/analytics.ts`**: `getTopPerformingPosts`, `getBestPostingTimes`, `getPlatformSummary`
+- **`/analytics` page**: Per-platform stats bar, top posts table sorted by engagement rate, best time to post recommendation, empty state
+- **Dashboard stats bar**: Add "Avg engagement rate" + "Top platform" stats
+- **`POST /api/trigger/analytics`**: Manual trigger for analytics fetch
+- **`POST /api/callback/analytics`**: n8n calls this after metrics are written to Sheet
+- **Cron Operation 9**: Post-fetch learning — high-performing posts → learnings.md content performance section; low performers → patterns to avoid. Closes the performance → learning feedback loop.
+
+### Session 13 — First Comment Scheduling
+Schedule the first comment alongside a post (critical for LinkedIn hashtag/link strategy).
+
+- **Type update**: Add `firstComment: string | null` and `firstCommentScheduledAt: string | null` to `PlatformVariant`
+- **Sheet schema**: Add `[platform]_first_comment` and `[platform]_first_comment_status` columns
+- **n8n Workflow 3 update**: After posting, if `firstComment` present → wait 30s → post as comment → update Sheet status
+- **Repurpose page**: First comment textarea per platform card (collapsible "+ Add first comment"), pre-filled for LinkedIn with hashtag bank tags + any links from post
+- Platform defaults: LinkedIn (show + pre-fill), Twitter/Instagram (hidden), Facebook/Skool (shown, optional)
+- **Settings update**: Add first comment toggle to platform rules
+
+### Session 14 — Bulk Repurpose
+Select multiple dashboard rows and repurpose all in one action.
+
+- **Dashboard**: Checkbox column on PostsTable rows, "Select all" header checkbox, bulk action bar ("Repurpose selected (N)" + count)
+- **`POST /api/trigger/repurpose/bulk`**: Accepts `{ postIds: string[], platforms?: Platform[] }`, processes sequentially with 2s delay to avoid n8n rate limits, returns per-post results
+- **Filter**: Only queue posts where ALL platforms are `pending`; skip in-progress posts
+- **UI feedback**: Per-post status in a bulk progress panel shown during processing
+
+### Session 15 — Evergreen Content Recycling Queue
+Re-queue top-performing posts for republication after a configurable interval.
+
+- **`config/evergreen.json`**: `{ enabled, engagementThreshold, recycleIntervalDays, platforms }`
+- **Settings — Evergreen tab**: Enable toggle, threshold slider, interval picker, platform checkboxes
+- **`GET/POST /api/evergreen`**: Read/write evergreen config
+- **Cron Operation 10**: Check posts where `published_at` > recycle interval + engagement ≥ threshold → reset status to `approved` → log to learnings.md
+- **Dashboard**: "♻" badge on recycled post rows; filter option "Show recycled"
+
+### Session 16 — Hook Variants + LinkedIn Carousel
+Two high-impact content features: A/B hook options and LinkedIn's highest-reach format.
+
+**Hook Variants:**
+- **Platform skill update**: All 5 content skills return `hookVariants: string[]` (2–3 opening alternatives)
+- **`ContentPromptOutput` type update**: Add `hookVariants: string[]`
+- **Repurpose page**: Hook picker panel per platform card — 2–3 clickable chips above textarea; clicking replaces first line of text, marks as "edited"
+
+**LinkedIn Carousel:**
+- **`skills/platforms/linkedin-carousel-content.md`**: New skill — generates structured slide deck from LinkedIn post
+- **New type `CarouselPromptOutput`**: `{ coverSlide, slides[], closingSlide, caption, hashtags }`
+- **`POST /api/skills/carousel`**: Executes carousel skill, returns `CarouselPromptOutput`
+- **Repurpose page**: "LinkedIn Carousel" toggle in source panel; Carousel Preview component (stacked slide cards, each editable); "Copy as JSON" + "Copy slide texts" export buttons
+
+### Session 17 — Image Brand Kit + Visual Post Preview
+Ensure visual consistency across all generated images and let users preview posts before publishing.
+
+**Image Brand Kit:**
+- **`BrandVoiceProfile` type update**: Add `imageBrandKit: { primaryColor, secondaryColor, visualStyle, photographyStyle, moodKeywords, avoidInImages }`
+- **Settings — Brand Voice tab**: Add "Image Brand Kit" section with hex color pickers, visual style pills, photography style pills, mood keywords tag input, avoid tag input
+- **All image skill files**: Inject `imageBrandKit` into prompt template and negative prompt suffix
+- **`lib/brand-voice.ts`**: Update `getBrandVoice` and `saveBrandVoice` for new field
+
+**Visual Post Preview:**
+- **`components/repurpose/PostPreview.tsx`**: Platform-accurate mock rendering of how the post will look — Twitter card, Instagram grid tile, Facebook post, LinkedIn post, Threads bubble
+- **Repurpose page**: "Preview" toggle on each platform card — switches between edit mode and preview mode
+- Preview is read-only, shows hashtags inline in platform-native position, image at correct aspect ratio
+
+---
+
 ## Session 1 — Complete File List
 
 ### Bootstrap

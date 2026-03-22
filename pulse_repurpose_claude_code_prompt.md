@@ -4511,6 +4511,326 @@ Build in this sequence to get a working app fastest:
 
 ---
 
+---
+
+## Gap Features — Phase 2 Additions
+
+These features were identified via industry gap analysis (March 2026) against leading tools (Buffer, Taplio, Lately.ai, Repurpose.io). They are prioritised by impact and added as new build sessions.
+
+---
+
+### Analytics Integration
+
+**Goal**: Pull real engagement data from published platforms via n8n and store in Google Sheet + local analytics store. Feed this into the learning system so the AOS improves from actual performance, not just approval patterns.
+
+#### Google Sheet schema additions
+
+Add these columns to the Sheet (one set per platform, appended after existing columns):
+
+```
+[platform]_impressions     integer — post reach/impressions
+[platform]_likes           integer
+[platform]_comments        integer
+[platform]_shares          integer
+[platform]_engagement_rate float — (likes+comments+shares) / impressions * 100
+[platform]_fetched_at      ISO date string — when metrics were last pulled
+```
+
+#### n8n Workflow 4 — Analytics Fetch
+
+**Trigger**: Scheduled (cron) — daily at 6am, or called via `POST /api/trigger/analytics`
+
+For each published post (status = `published`):
+1. Platform-specific API calls to fetch engagement metrics (Twitter API v2, Instagram Graph API, Facebook Graph API, etc.)
+2. Write metrics to the Sheet via Workflow 0 (`UPDATE_ANALYTICS` action)
+3. Call app callback `POST /api/callback/analytics` with `{ postId, platform, metrics }`
+
+**New Sheet action**: `UPDATE_ANALYTICS`
+```typescript
+{
+  postId: string
+  platform: Platform
+  metrics: {
+    impressions: number
+    likes: number
+    comments: number
+    shares: number
+    engagementRate: number
+  }
+}
+```
+
+#### App-side analytics
+
+**`lib/analytics.ts`** — helpers:
+- `getPostAnalytics(postId: string)` — reads analytics columns from Sheet via n8n
+- `getTopPerformingPosts(platform: Platform, limit: number)` — sorted by engagement rate
+- `getBestPostingTimes(platform: Platform)` — derives from `published_at` timestamps of top posts
+- `getPlatformSummary(platform: Platform)` — avg engagement rate, total impressions, total posts
+
+**`/analytics` page** (new route):
+- Per-platform stats bar: total posts, avg engagement rate, total impressions, best performing post
+- Top posts table: sorted by engagement rate, shows post preview + metrics
+- Best time to post: derived from historical data, shown as a simple hour recommendation
+- Empty state: "Publish some posts first — analytics will appear here once platform metrics are fetched"
+
+**Dashboard stats bar additions**: Add "Avg engagement rate this week" and "Top platform" stats.
+
+**Cron skill integration** (Operation 9 — new):
+After fetching analytics, for each post with new metrics:
+1. Compare engagement rate to historical average for that platform
+2. If engagement rate > 2× average: append to `learnings.md` under `## Content performance` with the post snippet and what made it different (topic, format, hook style)
+3. If engagement rate < 0.5× average: flag patterns to avoid in `learnings.md`
+
+This closes the performance → learning feedback loop: actual platform data drives future AI generation quality.
+
+---
+
+### First Comment Scheduling
+
+**Goal**: Schedule the first comment alongside a post (critical for LinkedIn — hashtags and links in first comment don't suppress reach).
+
+#### Type additions
+
+```typescript
+export interface PlatformVariant {
+  // ... existing fields ...
+  firstComment: string | null        // Text for the first comment (links, hashtags)
+  firstCommentScheduledAt: string | null  // When to post the comment (= post scheduledAt)
+}
+```
+
+#### Sheet schema additions
+
+Add per-platform:
+```
+[platform]_first_comment        string — first comment text
+[platform]_first_comment_status pending | published | failed
+```
+
+#### n8n Workflow 3 update (Publish)
+
+After posting the main content, if `payload.firstComment` is present:
+1. Wait 30 seconds (gives the post time to propagate)
+2. Call platform API to post as a comment on the published post
+3. Update Sheet `[platform]_first_comment_status` to `published` or `failed`
+
+#### UI additions
+
+In each platform card on the repurpose page:
+- **First comment textarea** — below main text, collapsible ("+ Add first comment")
+- Pre-filled suggestion for LinkedIn: top 3 relevant hashtags from hashtag bank + any links from the post
+- Character limit indicator
+- On approve: first comment text is saved to Sheet alongside main variant
+
+Platform-specific defaults:
+- **LinkedIn**: suggested first comment = hashtags (from hashtag bank) + any links mentioned in post text
+- **Twitter/X**: not shown (replies work differently)
+- **Instagram**: not shown (first comment is less impactful)
+- **Facebook/Skool**: shown but optional
+
+---
+
+### Bulk Repurpose
+
+**Goal**: Select multiple posts from the dashboard and repurpose all at once.
+
+#### Dashboard additions
+
+- **Checkbox column** on each row in PostsTable
+- **"Select all" checkbox** in header
+- **Bulk action bar** (appears when ≥1 post selected):
+  - "Repurpose selected (N)" — fires `POST /api/trigger/repurpose` for each selected post sequentially (not parallel — avoids rate limits)
+  - "Clear selection" button
+  - Count: "5 posts selected"
+
+#### API additions
+
+**`POST /api/trigger/repurpose/bulk`**
+```typescript
+// Request body:
+{
+  postIds: string[]
+  platforms?: Platform[]   // default: all 5
+}
+// Processes posts sequentially with 2s delay between each
+// Returns: { queued: number; results: Array<{ postId: string; success: boolean; error?: string }> }
+```
+
+Sequential processing with delay prevents n8n from being overwhelmed. Each post fires its own trigger, same as single repurpose.
+
+**Bulk filter**: Only repurpose posts where ALL platforms are `pending`. Skip posts already in progress.
+
+---
+
+### Evergreen Content Recycling Queue
+
+**Goal**: Re-queue top-performing posts for re-publication after a configurable interval.
+
+#### Settings additions — "Evergreen" tab on `/settings`
+
+- **Enable evergreen recycling** toggle (off by default)
+- **Minimum engagement threshold**: only recycle posts with engagement rate ≥ X% (default: 2%)
+- **Recycle interval**: minimum days between republications (default: 90 days)
+- **Platforms to recycle**: checkboxes per platform
+- Save to `config/evergreen.json`
+
+#### Cron skill additions (Operation 10 — new)
+
+**Operation 10 — Evergreen queue check**:
+1. Load `config/evergreen.json` — if disabled, skip
+2. Get all published posts from Sheet where `published_at` < (today − recycle_interval)
+3. For each: check `[platform]_engagement_rate` ≥ threshold
+4. For qualifying posts: set status back to `approved` in Sheet (ready to be scheduled again)
+5. Log to `memory/learnings.md`: "Evergreen: recycled [N] posts for [platform]"
+6. These posts appear in dashboard with `approved` status and a subtle "♻ Recycled" badge
+
+#### UI additions
+
+- **"♻" badge** on post rows in dashboard where a variant has been recycled
+- **Evergreen tab** in settings with the configuration above
+
+---
+
+### Hook Variant Generation
+
+**Goal**: Generate 2–3 hook options per platform so the user can pick the best opening before approving.
+
+#### Platform skill update
+
+All content skill files: add a `hookVariants` field to the output contract.
+
+Updated `ContentPromptOutput`:
+```typescript
+interface ContentPromptOutput {
+  systemPrompt: string
+  userPrompt: string
+  hookVariants: string[]   // 2-3 alternative opening lines — user picks one or uses AI default
+  context: { ... }
+}
+```
+
+The system prompt in each skill file instructs the model to additionally return 2–3 hook alternatives at the top of the output.
+
+#### UI additions
+
+In each platform card, after text generation:
+- **Hook picker panel** (collapsible, shown above the main textarea): "Try a different hook"
+- Shows 2–3 hook options as clickable chips
+- Clicking a hook replaces the first line of the generated text in the textarea
+- Marked with "✎ edited" indicator since it's a user modification
+- If `hookVariants` is empty or missing (model didn't return them): panel is hidden
+
+---
+
+### LinkedIn Carousel / PDF Posts
+
+**Goal**: Generate carousel-format content (multi-slide posts uploaded as PDF) as an additional output format — LinkedIn's highest-reach format.
+
+#### New platform skill variant
+
+Add `linkedin-carousel-content.md` to `skills/platforms/`:
+- Input: `linkedinText` (source post)
+- Output: structured slide deck content
+
+New `CarouselPromptOutput`:
+```typescript
+interface CarouselPromptOutput {
+  postId: string
+  coverSlide: {
+    headline: string      // Bold hook — max 8 words
+    subheadline: string   // Supporting line — max 15 words
+  }
+  slides: Array<{
+    slideNumber: number
+    title: string         // Max 8 words
+    body: string          // 2–3 bullet points or 1 short paragraph
+  }>                      // 5–8 content slides
+  closingSlide: {
+    callToAction: string  // "Save this for later" / "Share if this resonated"
+    authorLine: string    // "@handle — topic pillar"
+  }
+  caption: string         // LinkedIn post caption that accompanies the PDF upload
+  hashtags: string[]      // 3–5 hashtags for the caption
+}
+```
+
+#### Carousel skill rules
+
+- Cover slide: hook must stop the scroll — use the most provocative insight from the post
+- Each slide: one idea only — no cramming
+- Font-friendly: no special characters, emojis, or markdown
+- Closing slide: always include a save/share CTA + author attribution
+- Caption: short teaser (first 2–3 sentences of the LinkedIn post) + "Full breakdown in the carousel 👇"
+- Aim for 6–7 slides total (cover + 4–5 content + closing)
+
+#### UI additions
+
+In the repurpose page, add a **"LinkedIn Carousel"** toggle in the source panel:
+- Generates carousel content via the new skill (separate from the 5-platform text skills)
+- Shows a **Carousel Preview** component: vertically stacked slide cards with cover → content slides → closing
+- Each slide is editable inline
+- **Export options**:
+  - "Copy as JSON" — for paste into Canva / design tool via API
+  - "Copy slide texts" — plain text block per slide for manual design
+  - Future: direct Canva API integration
+
+This adds LinkedIn as an additional output target (not just a source), closing the loop.
+
+---
+
+### Image Brand Kit
+
+**Goal**: Define visual brand constraints (color palette, style, mood board) that are fed consistently into every image generation prompt — ensuring visual coherence across all platforms.
+
+#### Settings additions — "Image Brand Kit" section in Brand Voice tab
+
+Form fields:
+- **Primary brand color**: hex picker
+- **Secondary brand color**: hex picker
+- **Visual style**: pill selection — Minimal / Bold / Warm / Monochrome / Vibrant / Dark
+- **Photography style**: pill selection — Photorealistic / Illustrated / Abstract / Data-viz / Flat
+- **Mood keywords**: tag input — "calm", "energetic", "professional", "playful" (max 5)
+- **Avoid in images**: tag input — "stock photo clichés", "handshakes", "lightbulbs"
+
+Saved to `config/brand-voice.json` under a new `imageBrandKit` field:
+```typescript
+export interface BrandVoiceProfile {
+  // ... existing fields ...
+  imageBrandKit: {
+    primaryColor: string      // hex e.g. "#7C3AED"
+    secondaryColor: string    // hex
+    visualStyle: string       // "minimal" | "bold" | "warm" | "monochrome" | "vibrant" | "dark"
+    photographyStyle: string  // "photorealistic" | "illustrated" | "abstract" | "flat"
+    moodKeywords: string[]
+    avoidInImages: string[]
+  }
+}
+```
+
+#### Image skill update
+
+All image skill files: inject `imageBrandKit` into the prompt template.
+
+Updated prompt template suffix (added to every image skill's prompt construction):
+```
+BRAND VISUAL IDENTITY:
+Primary color: {imageBrandKit.primaryColor} — use as accent or dominant tone
+Style: {imageBrandKit.visualStyle} — {imageBrandKit.photographyStyle}
+Mood: {imageBrandKit.moodKeywords}
+Avoid: {imageBrandKit.avoidInImages}
+All images for this brand must feel visually consistent with each other.
+```
+
+Updated `negativePrompt` suffix:
+```
+{imageBrandKit.avoidInImages joined by ", "}, inconsistent style, clashing colors
+```
+
+This ensures every fal.ai generation reflects the user's visual identity, not just the post topic.
+
+---
+
 ## Final notes for Claude Code
 
 - **MANDATORY AFTER EVERY FEATURE CHANGE**: (1) Write a CHANGELOG.md entry (date, type, files changed, summary, docs affected). (2) Call `POST /api/docs/sync` with the entry, changed files list, and change type. (3) Verify all affected docs returned `"updated"` — retry any that returned `"failed"`. (4) If the sync route doesn't exist yet, write the CHANGELOG entry manually and the route will catch up when built. A task is NOT complete until this step is done.
