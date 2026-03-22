@@ -9,7 +9,7 @@ n8n receives this payload and calls fal.ai directly.
 - `linkedinText`: string — source post text
 - `sourceImageUrl`: string | null — original LinkedIn image URL
 - `postId`: string
-- `brandVoice`: BrandVoiceProfile — for visual tone alignment
+- `brandVoice`: BrandVoiceProfile — for visual tone alignment (includes `imageBrandKit`)
 - `learnings`: string — image learnings from memory/learnings.md if any
 
 ## Platform image identity
@@ -26,11 +26,20 @@ n8n receives this payload and calls fal.ai directly.
 4. Something visually interesting but approachable — not overwhelming
 5. Match the conversational tone of Threads content
 
+## Image Brand Kit injection
+
+If `brandVoice.imageBrandKit` is provided, inject it into the prompt as follows:
+- **primaryColor / secondaryColor**: Inform the warm palette — e.g. "warm palette grounded in [primaryColor]"
+- **visualStyle**: Append as style adjectives — e.g. "casual editorial style"
+- **photographyStyle**: Define shot type — e.g. "lifestyle candid photography"
+- **moodKeywords**: Blend into mood/atmosphere — e.g. "warm, approachable, [moodKeywords]"
+- **avoidInImages**: Append each item to the negative prompt
+
 ## Prompt template
 
 ```
-A [visual concept] — [intimate or natural scene] — [warm, personal atmosphere].
-[Natural lighting]. [Warm or muted color palette]. Casual, authentic feel.
+A [visual concept] — [intimate or natural scene] — [warm, personal atmosphere from moodKeywords].
+[Natural lighting]. [Warm or muted palette: primaryColor and secondaryColor if set]. [visualStyle + photographyStyle]. Casual, authentic feel.
 No text, no words, no captions, no overlays. Square 1:1 composition.
 ```
 
@@ -53,7 +62,7 @@ No text, no words, no captions, no overlays. Square 1:1 composition.
 ```
 text, words, letters, captions, watermarks, logos, blurry, low quality, distorted,
 corporate stock photo, formal business setting, harsh lighting, oversaturated,
-cold clinical colors, pixelated, ugly, deformed
+cold clinical colors, pixelated, ugly, deformed[, <avoidInImages items from imageBrandKit if set>]
 ```
 
 ## Output contract

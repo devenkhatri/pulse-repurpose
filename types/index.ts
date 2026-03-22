@@ -38,12 +38,22 @@ export interface PlatformVariant {
   firstCommentStatus: string | null // 'pending' | 'published' | 'failed' | null
 }
 
+export interface ImageBrandKit {
+  primaryColor: string              // Hex e.g. "#7C3AED"
+  secondaryColor: string            // Hex e.g. "#A78BFA"
+  visualStyle: string[]             // e.g. ["minimalist", "bold", "editorial"]
+  photographyStyle: string[]        // e.g. ["product", "lifestyle", "abstract"]
+  moodKeywords: string[]            // e.g. ["confident", "modern", "clean"]
+  avoidInImages: string[]           // e.g. ["people", "text overlays", "stock handshakes"]
+}
+
 export interface BrandVoiceProfile {
   toneDescriptors: string[]         // e.g. ["direct", "practical", "no fluff"]
   writingStyle: string              // Free text paragraph describing writing style
   topicPillars: string[]            // e.g. ["solopreneurship", "AI tools", "productivity"]
   avoidList: string[]               // Words, phrases, or patterns to never use
   examplePosts: string[]            // 3–5 raw LinkedIn post texts the user loves
+  imageBrandKit: ImageBrandKit      // Visual identity for AI image generation
   lastUpdated: string               // ISO date string
 }
 

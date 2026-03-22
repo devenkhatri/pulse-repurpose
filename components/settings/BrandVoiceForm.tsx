@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, KeyboardEvent } from "react"
 import { toast } from "sonner"
-import { Save, AlertCircle } from "lucide-react"
+import { Save, AlertCircle, Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
@@ -10,7 +10,144 @@ import { Input } from "@/components/ui/input"
 import { ExamplePostsInput } from "./ExamplePostsInput"
 import { AvoidListInput } from "./AvoidListInput"
 import { TopicPillarsInput } from "./TopicPillarsInput"
-import type { BrandVoiceProfile } from "@/types"
+import type { BrandVoiceProfile, ImageBrandKit } from "@/types"
+
+const VISUAL_STYLE_OPTIONS = [
+  "minimalist",
+  "bold",
+  "editorial",
+  "cinematic",
+  "documentary",
+  "abstract",
+  "geometric",
+  "organic",
+]
+
+const PHOTOGRAPHY_STYLE_OPTIONS = [
+  "product",
+  "lifestyle",
+  "portrait",
+  "landscape",
+  "abstract",
+  "candid",
+  "conceptual",
+  "flat-lay",
+]
+
+const DEFAULT_IMAGE_BRAND_KIT: ImageBrandKit = {
+  primaryColor: "#7C3AED",
+  secondaryColor: "#A78BFA",
+  visualStyle: [],
+  photographyStyle: [],
+  moodKeywords: [],
+  avoidInImages: [],
+}
+
+// ---------------------------------------------------------------------------
+// Tag input helper
+// ---------------------------------------------------------------------------
+
+function TagInput({
+  label,
+  tags,
+  placeholder,
+  onChange,
+}: {
+  label: string
+  tags: string[]
+  placeholder: string
+  onChange: (tags: string[]) => void
+}) {
+  const [input, setInput] = useState("")
+
+  const add = () => {
+    const val = input.trim()
+    if (!val || tags.includes(val)) { setInput(""); return }
+    onChange([...tags, val])
+    setInput("")
+  }
+
+  return (
+    <div className="space-y-2">
+      <Label className="text-white/70 text-sm">{label}</Label>
+      <div className="flex flex-wrap gap-1.5 p-2.5 rounded-md border border-white/10 bg-[#161616] min-h-[42px]">
+        {tags.map((tag) => (
+          <span
+            key={tag}
+            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#7C3AED]/20 text-[#a78bfa] text-xs font-medium"
+          >
+            {tag}
+            <button
+              type="button"
+              onClick={() => onChange(tags.filter((t) => t !== tag))}
+              className="hover:text-white ml-0.5"
+            >
+              <X className="w-2.5 h-2.5" />
+            </button>
+          </span>
+        ))}
+        <div className="flex items-center gap-1 flex-1 min-w-[120px]">
+          <Input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add() } }}
+            placeholder={placeholder}
+            className="border-none bg-transparent h-5 p-0 text-sm text-white placeholder:text-white/20 focus-visible:ring-0 flex-1"
+          />
+          {input && (
+            <button type="button" onClick={add} className="text-[#7C3AED] hover:text-[#A78BFA]">
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Pill picker helper
+// ---------------------------------------------------------------------------
+
+function PillPicker({
+  label,
+  options,
+  selected,
+  onChange,
+}: {
+  label: string
+  options: string[]
+  selected: string[]
+  onChange: (selected: string[]) => void
+}) {
+  const toggle = (opt: string) => {
+    onChange(
+      selected.includes(opt) ? selected.filter((s) => s !== opt) : [...selected, opt]
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      <Label className="text-white/70 text-sm">{label}</Label>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((opt) => (
+          <button
+            key={opt}
+            type="button"
+            onClick={() => toggle(opt)}
+            className={`px-2.5 py-0.5 rounded-full text-xs font-medium border transition-colors ${
+              selected.includes(opt)
+                ? "bg-[#7C3AED]/30 border-[#7C3AED]/60 text-[#A78BFA]"
+                : "border-white/10 text-white/40 hover:border-[#7C3AED]/40 hover:text-[#a78bfa]"
+            }`}
+          >
+            {opt}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 const TONE_SUGGESTIONS = [
   "direct",
@@ -233,6 +370,110 @@ export function BrandVoiceForm({ initialProfile, onSaved, onDirtyChange }: Brand
         posts={profile.examplePosts}
         onChange={(posts) => updateField("examplePosts", posts)}
       />
+
+      {/* Image Brand Kit */}
+      <div className="space-y-5 pt-2 border-t border-white/5">
+        <div>
+          <h3 className="text-sm font-semibold text-white/80">Image Brand Kit</h3>
+          <p className="text-xs text-white/30 mt-0.5">
+            Applied to all AI image generation prompts for visual consistency.
+          </p>
+        </div>
+
+        {/* Color pickers */}
+        <div className="flex gap-4">
+          <div className="space-y-1.5">
+            <Label className="text-white/70 text-xs">Primary color</Label>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={profile.imageBrandKit?.primaryColor ?? DEFAULT_IMAGE_BRAND_KIT.primaryColor}
+                onChange={(e) =>
+                  updateField("imageBrandKit", {
+                    ...(profile.imageBrandKit ?? DEFAULT_IMAGE_BRAND_KIT),
+                    primaryColor: e.target.value,
+                  })
+                }
+                className="w-9 h-9 rounded-md border border-white/10 bg-transparent cursor-pointer p-0.5"
+              />
+              <span className="text-xs text-white/40 font-mono">
+                {profile.imageBrandKit?.primaryColor ?? DEFAULT_IMAGE_BRAND_KIT.primaryColor}
+              </span>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-white/70 text-xs">Secondary color</Label>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={profile.imageBrandKit?.secondaryColor ?? DEFAULT_IMAGE_BRAND_KIT.secondaryColor}
+                onChange={(e) =>
+                  updateField("imageBrandKit", {
+                    ...(profile.imageBrandKit ?? DEFAULT_IMAGE_BRAND_KIT),
+                    secondaryColor: e.target.value,
+                  })
+                }
+                className="w-9 h-9 rounded-md border border-white/10 bg-transparent cursor-pointer p-0.5"
+              />
+              <span className="text-xs text-white/40 font-mono">
+                {profile.imageBrandKit?.secondaryColor ?? DEFAULT_IMAGE_BRAND_KIT.secondaryColor}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Visual style pills */}
+        <PillPicker
+          label="Visual style"
+          options={VISUAL_STYLE_OPTIONS}
+          selected={profile.imageBrandKit?.visualStyle ?? []}
+          onChange={(v) =>
+            updateField("imageBrandKit", {
+              ...(profile.imageBrandKit ?? DEFAULT_IMAGE_BRAND_KIT),
+              visualStyle: v,
+            })
+          }
+        />
+
+        {/* Photography style pills */}
+        <PillPicker
+          label="Photography style"
+          options={PHOTOGRAPHY_STYLE_OPTIONS}
+          selected={profile.imageBrandKit?.photographyStyle ?? []}
+          onChange={(v) =>
+            updateField("imageBrandKit", {
+              ...(profile.imageBrandKit ?? DEFAULT_IMAGE_BRAND_KIT),
+              photographyStyle: v,
+            })
+          }
+        />
+
+        {/* Mood keywords */}
+        <TagInput
+          label="Mood keywords"
+          tags={profile.imageBrandKit?.moodKeywords ?? []}
+          placeholder="confident, modern, clean..."
+          onChange={(v) =>
+            updateField("imageBrandKit", {
+              ...(profile.imageBrandKit ?? DEFAULT_IMAGE_BRAND_KIT),
+              moodKeywords: v,
+            })
+          }
+        />
+
+        {/* Avoid in images */}
+        <TagInput
+          label="Avoid in images"
+          tags={profile.imageBrandKit?.avoidInImages ?? []}
+          placeholder="people, text overlays, stock handshakes..."
+          onChange={(v) =>
+            updateField("imageBrandKit", {
+              ...(profile.imageBrandKit ?? DEFAULT_IMAGE_BRAND_KIT),
+              avoidInImages: v,
+            })
+          }
+        />
+      </div>
 
       {/* Warning if no examples */}
       {profile.examplePosts.length === 0 && (

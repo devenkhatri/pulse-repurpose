@@ -9,7 +9,7 @@ n8n receives this payload and calls fal.ai directly.
 - `linkedinText`: string — source post text
 - `sourceImageUrl`: string | null — original LinkedIn image URL
 - `postId`: string
-- `brandVoice`: BrandVoiceProfile — for visual tone alignment
+- `brandVoice`: BrandVoiceProfile — for visual tone alignment (includes `imageBrandKit`)
 - `learnings`: string — image learnings from memory/learnings.md if any
 
 ## Platform image identity
@@ -26,11 +26,20 @@ n8n receives this payload and calls fal.ai directly.
 4. Approachable over slick — feels personal, not advertising-grade
 5. Avoid overly formal or corporate imagery
 
+## Image Brand Kit injection
+
+If `brandVoice.imageBrandKit` is provided, inject it into the prompt as follows:
+- **primaryColor / secondaryColor**: Define the warm palette — e.g. "earthy palette of [primaryColor] and [secondaryColor]"
+- **visualStyle**: Append as style adjectives — e.g. "warm documentary style"
+- **photographyStyle**: Define shot type — e.g. "lifestyle community photography"
+- **moodKeywords**: Blend into mood — e.g. "inviting, [moodKeywords]"
+- **avoidInImages**: Append each item to the negative prompt
+
 ## Prompt template
 
 ```
-A [visual concept] — [warm, inviting scene] — [community-friendly atmosphere].
-[Soft, natural lighting]. [Warm, earthy color palette]. Approachable, photorealistic quality.
+A [visual concept] — [warm, inviting scene] — [community-friendly atmosphere from moodKeywords].
+[Soft, natural lighting]. [Warm palette: primaryColor and secondaryColor if set]. [visualStyle + photographyStyle]. Approachable, photorealistic quality.
 No text, no words, no captions, no overlays. 16:9 landscape Facebook composition.
 ```
 
@@ -53,7 +62,7 @@ No text, no words, no captions, no overlays. 16:9 landscape Facebook composition
 ```
 text, words, letters, captions, watermarks, logos, blurry, low quality, distorted,
 cold corporate imagery, aggressive advertising feel, harsh neon colors,
-portrait orientation, generic handshake stock photo, oversaturated, pixelated
+portrait orientation, generic handshake stock photo, oversaturated, pixelated[, <avoidInImages items from imageBrandKit if set>]
 ```
 
 ## Output contract

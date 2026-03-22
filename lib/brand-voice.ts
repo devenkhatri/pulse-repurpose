@@ -15,6 +15,14 @@ const DEFAULT_BRAND_VOICE: BrandVoiceProfile = {
   topicPillars: [],
   avoidList: ["synergy", "leverage", "game-changer", "thought leader"],
   examplePosts: [],
+  imageBrandKit: {
+    primaryColor: "#7C3AED",
+    secondaryColor: "#A78BFA",
+    visualStyle: [],
+    photographyStyle: [],
+    moodKeywords: [],
+    avoidInImages: [],
+  },
   lastUpdated: "",
 }
 
@@ -26,7 +34,12 @@ export async function getBrandVoice(): Promise<BrandVoiceProfile> {
   return cacheGetOrSet(BRAND_VOICE_CACHE_KEY, BRAND_VOICE_TTL_MS, async () => {
     try {
       const raw = await fs.readFile(CONFIG_PATH, "utf-8")
-      return JSON.parse(raw) as BrandVoiceProfile
+      const parsed = JSON.parse(raw) as BrandVoiceProfile
+      // Backfill imageBrandKit for profiles saved before Session 17
+      if (!parsed.imageBrandKit) {
+        parsed.imageBrandKit = DEFAULT_BRAND_VOICE.imageBrandKit
+      }
+      return parsed
     } catch {
       return DEFAULT_BRAND_VOICE
     }

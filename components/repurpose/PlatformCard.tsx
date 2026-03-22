@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/dashboard/StatusBadge"
 import { ApproveButton } from "@/components/repurpose/ApproveButton"
 import { ImagePreview } from "@/components/repurpose/ImagePreview"
 import { HashtagSuggestions } from "@/components/repurpose/HashtagSuggestions"
+import { PostPreview } from "@/components/repurpose/PostPreview"
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog"
 import { useRepurposeStore } from "@/stores/repurposeStore"
 import { PLATFORM_RULES } from "@/lib/platform-rules"
@@ -61,6 +62,7 @@ export function PlatformCard({
   const [newHashtag, setNewHashtag] = useState("")
   const [showDuplicateConfirm, setShowDuplicateConfirm] = useState(false)
   const [saveState, setSaveState] = useState<SaveState>("idle")
+  const [isPreviewMode, setIsPreviewMode] = useState(false)
   const saveResetRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -343,6 +345,22 @@ export function PlatformCard({
           )}
         </div>
         <div className="flex items-center gap-2">
+          {text && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setIsPreviewMode((p) => !p)
+              }}
+              className={cn(
+                "text-[10px] px-2 py-0.5 rounded border transition-colors",
+                isPreviewMode
+                  ? "border-[#7C3AED]/60 text-[#A78BFA] bg-[#7C3AED]/10"
+                  : "border-[#2A2A2A] text-[#555555] hover:border-[#3A3A3A] hover:text-[#888888]"
+              )}
+            >
+              {isPreviewMode ? "Edit" : "Preview"}
+            </button>
+          )}
           <StatusBadge status={platformVariant.status} />
           <ApproveButton
             isApproved={isApproved}
@@ -355,8 +373,20 @@ export function PlatformCard({
         </div>
       </div>
 
+      {/* Preview mode */}
+      {isPreviewMode && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <PostPreview
+            platform={platform}
+            text={text}
+            hashtags={hashtags}
+            imageUrl={platformVariant.imageUrl ?? null}
+          />
+        </div>
+      )}
+
       {/* Hook picker — shown when hookVariants exist and post is not published */}
-      {hookVariants.length > 0 && !isPublished && text && (
+      {!isPreviewMode && hookVariants.length > 0 && !isPublished && text && (
         <div
           className="space-y-1.5"
           onClick={(e) => e.stopPropagation()}
@@ -378,7 +408,7 @@ export function PlatformCard({
       )}
 
       {/* Textarea */}
-      {(text || !isTextGenerating) && (
+      {!isPreviewMode && (text || !isTextGenerating) && (
         <div
           className="space-y-1"
           onClick={(e) => e.stopPropagation()}
@@ -427,17 +457,19 @@ export function PlatformCard({
       )}
 
       {/* Image */}
-      <div onClick={(e) => e.stopPropagation()}>
-        <ImagePreview
-          imageUrl={platformVariant.imageUrl}
-          isGenerating={isImageGenerating && !platformVariant.imageUrl}
-          platform={platform}
-          onRegenerate={onRegenerateImage ? () => onRegenerateImage(platform) : undefined}
-        />
-      </div>
+      {!isPreviewMode && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <ImagePreview
+            imageUrl={platformVariant.imageUrl}
+            isGenerating={isImageGenerating && !platformVariant.imageUrl}
+            platform={platform}
+            onRegenerate={onRegenerateImage ? () => onRegenerateImage(platform) : undefined}
+          />
+        </div>
+      )}
 
       {/* Hashtags */}
-      {rules.hashtagCount.max > 0 && (
+      {!isPreviewMode && rules.hashtagCount.max > 0 && (
         <div
           className="space-y-2"
           onClick={(e) => e.stopPropagation()}
@@ -496,7 +528,7 @@ export function PlatformCard({
       )}
 
       {/* First comment section */}
-      {FIRST_COMMENT_SUPPORTED.has(platform) && (
+      {!isPreviewMode && FIRST_COMMENT_SUPPORTED.has(platform) && (
         <div
           className="space-y-1"
           onClick={(e) => e.stopPropagation()}

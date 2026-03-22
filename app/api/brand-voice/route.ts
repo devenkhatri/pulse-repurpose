@@ -6,12 +6,29 @@ import { getBrandVoice, saveBrandVoice } from "@/lib/brand-voice"
 // Zod schema
 // ---------------------------------------------------------------------------
 
+const ImageBrandKitSchema = z.object({
+  primaryColor: z.string().default("#7C3AED"),
+  secondaryColor: z.string().default("#A78BFA"),
+  visualStyle: z.array(z.string()).default([]),
+  photographyStyle: z.array(z.string()).default([]),
+  moodKeywords: z.array(z.string()).default([]),
+  avoidInImages: z.array(z.string()).default([]),
+})
+
 const BrandVoiceSchema = z.object({
   toneDescriptors: z.array(z.string()),
   writingStyle: z.string().max(500),
   topicPillars: z.array(z.string()),
   avoidList: z.array(z.string()),
   examplePosts: z.array(z.string()),
+  imageBrandKit: ImageBrandKitSchema.optional().default({
+    primaryColor: "#7C3AED",
+    secondaryColor: "#A78BFA",
+    visualStyle: [],
+    photographyStyle: [],
+    moodKeywords: [],
+    avoidInImages: [],
+  }),
   lastUpdated: z.string().optional().default(""),
 })
 

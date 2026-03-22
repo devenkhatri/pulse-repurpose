@@ -9,7 +9,7 @@ n8n receives this payload and calls fal.ai directly.
 - `linkedinText`: string — source post text (used to understand visual subject matter)
 - `sourceImageUrl`: string | null — original LinkedIn image URL
 - `postId`: string
-- `brandVoice`: BrandVoiceProfile — for visual tone alignment
+- `brandVoice`: BrandVoiceProfile — for visual tone alignment (includes `imageBrandKit`)
 - `learnings`: string — visual/image learnings from memory/learnings.md if any
 
 ## Platform image identity
@@ -27,11 +27,21 @@ The image prompt must:
 4. Have strong visual contrast for small-screen legibility
 5. Align with brand tone descriptors (if tone is "direct, no-fluff" — image should be minimal, not cluttered)
 
+## Image Brand Kit injection
+
+If `brandVoice.imageBrandKit` is provided, inject it into the prompt as follows:
+- **primaryColor / secondaryColor**: Reference these as the dominant palette — e.g. "dominant palette of [primaryColor] and [secondaryColor]"
+- **visualStyle**: Append the selected visual style adjectives — e.g. "minimalist editorial style"
+- **photographyStyle**: Use to define the shot type — e.g. "product photography style"
+- **moodKeywords**: Blend into mood/atmosphere — e.g. "confident, modern atmosphere"
+- **avoidInImages**: Append each item to the negative prompt — e.g. "no people, no text overlays"
+
 ## Prompt template
 
 ```
-A [visual concept derived from post topic] — [composition style] — [mood/atmosphere].
-[Lighting description]. [Color palette]. Professional quality, photorealistic/illustrated (choose based on post topic).
+A [visual concept derived from post topic] — [composition style] — [mood/atmosphere from moodKeywords].
+[Lighting description]. [Color palette: primaryColor and secondaryColor if set]. [visualStyle + photographyStyle].
+Professional quality, photorealistic/illustrated (choose based on post topic).
 No text, no words, no captions, no overlays. 16:9 landscape composition. [Any brand-specific visual notes from brandVoice].
 ```
 
@@ -54,7 +64,7 @@ No text, no words, no captions, no overlays. 16:9 landscape composition. [Any br
 ```
 text, words, letters, captions, watermarks, logos, blurry, low quality, distorted,
 portrait orientation, stock photo clichés (handshake, lightbulb, magnifying glass),
-oversaturated, pixelated, ugly, deformed
+oversaturated, pixelated, ugly, deformed[, <avoidInImages items from imageBrandKit if set>]
 ```
 
 ## Output contract

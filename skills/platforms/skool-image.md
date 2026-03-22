@@ -9,7 +9,7 @@ n8n receives this payload and calls fal.ai directly.
 - `linkedinText`: string — source post text
 - `sourceImageUrl`: string | null — original LinkedIn image URL
 - `postId`: string
-- `brandVoice`: BrandVoiceProfile — for visual tone alignment
+- `brandVoice`: BrandVoiceProfile — for visual tone alignment (includes `imageBrandKit`)
 - `learnings`: string — image learnings from memory/learnings.md if any
 
 ## Platform image identity
@@ -26,11 +26,20 @@ n8n receives this payload and calls fal.ai directly.
 4. Trustworthy and calm — not exciting or clickbait-y
 5. Works well as a discussion starter backdrop
 
+## Image Brand Kit injection
+
+If `brandVoice.imageBrandKit` is provided, inject it into the prompt as follows:
+- **primaryColor / secondaryColor**: Anchor the muted palette — e.g. "neutral palette grounded in [primaryColor]"
+- **visualStyle**: Append as style adjectives — e.g. "clean educational minimalist style"
+- **photographyStyle**: Define shot type — e.g. "conceptual illustrative photography"
+- **moodKeywords**: Blend into atmosphere — e.g. "calm, trustworthy, [moodKeywords]"
+- **avoidInImages**: Append each item to the negative prompt
+
 ## Prompt template
 
 ```
-A [educational visual concept related to post topic] — [clean, minimal scene] — [trustworthy, calm atmosphere].
-[Clear, even lighting]. [Neutral or cool-toned palette]. Clean educational quality, illustrative or photorealistic.
+A [educational visual concept related to post topic] — [clean, minimal scene] — [trustworthy, calm atmosphere from moodKeywords].
+[Clear, even lighting]. [Neutral palette: primaryColor and secondaryColor if set]. [visualStyle + photographyStyle]. Clean educational quality, illustrative or photorealistic.
 No text, no words, no captions, no overlays. 16:9 landscape Skool community composition.
 ```
 
@@ -53,7 +62,7 @@ No text, no words, no captions, no overlays. 16:9 landscape Skool community comp
 ```
 text, words, letters, captions, watermarks, logos, blurry, low quality, distorted,
 marketing-style imagery, aggressive colors, busy backgrounds, sales-y feel,
-portrait orientation, neon colors, dramatic lighting, oversaturated, pixelated
+portrait orientation, neon colors, dramatic lighting, oversaturated, pixelated[, <avoidInImages items from imageBrandKit if set>]
 ```
 
 ## Output contract

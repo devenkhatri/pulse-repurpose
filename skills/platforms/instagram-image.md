@@ -9,7 +9,7 @@ n8n receives this payload and calls fal.ai directly.
 - `linkedinText`: string — source post text
 - `sourceImageUrl`: string | null — original LinkedIn image URL
 - `postId`: string
-- `brandVoice`: BrandVoiceProfile — for visual tone alignment
+- `brandVoice`: BrandVoiceProfile — for visual tone alignment (includes `imageBrandKit`)
 - `learnings`: string — image learnings from memory/learnings.md if any
 
 ## Platform image identity
@@ -26,11 +26,21 @@ n8n receives this payload and calls fal.ai directly.
 4. Something visually compelling that makes someone stop scrolling
 5. Avoid generic stock look — should feel authored and deliberate
 
+## Image Brand Kit injection
+
+If `brandVoice.imageBrandKit` is provided, inject it into the prompt as follows:
+- **primaryColor / secondaryColor**: Drive the dominant palette — e.g. "cohesive palette of [primaryColor] and [secondaryColor]"
+- **visualStyle**: Append as style adjectives — e.g. "editorial minimalist style"
+- **photographyStyle**: Define shot type — e.g. "lifestyle photography"
+- **moodKeywords**: Blend into mood/atmosphere — e.g. "confident, clean atmosphere"
+- **avoidInImages**: Append each item to the negative prompt
+
 ## Prompt template
 
 ```
-A [visual concept] — [aesthetic composition] — [polished, styled atmosphere].
-[Deliberate lighting]. [Cohesive color palette]. Photographic quality, intentional aesthetic.
+A [visual concept] — [aesthetic composition] — [polished atmosphere from moodKeywords].
+[Deliberate lighting]. [Cohesive color palette: primaryColor and secondaryColor if set]. [visualStyle + photographyStyle].
+Photographic quality, intentional aesthetic.
 No text, no words, no captions, no overlays. Square 1:1 Instagram composition.
 ```
 
@@ -53,7 +63,7 @@ No text, no words, no captions, no overlays. Square 1:1 Instagram composition.
 ```
 text, words, letters, captions, watermarks, logos, blurry, low quality, distorted,
 generic stock photo, busy cluttered backgrounds, harsh colors, neon colors,
-portrait orientation, inconsistent lighting, pixelated, ugly, deformed
+portrait orientation, inconsistent lighting, pixelated, ugly, deformed[, <avoidInImages items from imageBrandKit if set>]
 ```
 
 ## Output contract
