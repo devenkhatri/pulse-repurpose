@@ -2,7 +2,7 @@
 
 import Image from "next/image"
 import { format } from "date-fns"
-import { RefreshCw, ImageIcon, X } from "lucide-react"
+import { RefreshCw, ImageIcon, X, Layers } from "lucide-react"
 import { useRepurposeStore } from "@/stores/repurposeStore"
 import { cn } from "@/lib/utils"
 import type { LinkedInPost, Platform, GenerationStatus } from "@/types"
@@ -24,10 +24,13 @@ interface SourcePostPanelProps {
   imageGenerationStatus: GenerationStatus
   selectedPlatforms: Platform[]
   hasTextVariants: boolean
+  carouselEnabled: boolean
+  carouselGenerating: boolean
   onTriggerRepurpose: () => void
   onTriggerImages: () => void
   onAbortText: () => void
   onAbortImages: () => void
+  onToggleCarousel: () => void
 }
 
 export function SourcePostPanel({
@@ -36,10 +39,13 @@ export function SourcePostPanel({
   imageGenerationStatus,
   selectedPlatforms,
   hasTextVariants,
+  carouselEnabled,
+  carouselGenerating,
   onTriggerRepurpose,
   onTriggerImages,
   onAbortText,
   onAbortImages,
+  onToggleCarousel,
 }: SourcePostPanelProps) {
   const { setSelectedPlatforms } = useRepurposeStore()
 
@@ -201,6 +207,26 @@ export function SourcePostPanel({
             Generate images
           </button>
         )}
+
+        {/* LinkedIn Carousel toggle */}
+        <button
+          onClick={onToggleCarousel}
+          disabled={carouselGenerating}
+          className={cn(
+            "w-full flex items-center justify-center gap-2 px-3 py-2 text-sm border rounded-lg transition-colors",
+            carouselEnabled
+              ? "bg-[#7C3AED]/15 border-[#7C3AED]/40 text-[#A78BFA] hover:bg-[#7C3AED]/25"
+              : "bg-[#1C1C1C] hover:bg-[#222222] border-[#2A2A2A] text-[#888888] hover:text-[#F5F5F5]",
+            carouselGenerating && "opacity-60 cursor-not-allowed"
+          )}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          {carouselGenerating
+            ? "Generating carousel…"
+            : carouselEnabled
+            ? "Carousel on"
+            : "LinkedIn Carousel"}
+        </button>
       </div>
     </div>
   )

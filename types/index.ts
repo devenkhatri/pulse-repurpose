@@ -84,6 +84,7 @@ export interface ChatMessage {
 export interface ContentPromptOutput {
   systemPrompt: string
   userPrompt: string
+  hookVariants: string[]        // 2–3 alternative opening lines for the hook picker
   context: {
     platformLabel: string
     maxChars: number
@@ -91,6 +92,19 @@ export interface ContentPromptOutput {
     threadEnabled: boolean
     learningsApplied: string[]
   }
+}
+
+export interface CarouselSlide {
+  headline: string
+  body: string
+}
+
+export interface CarouselPromptOutput {
+  coverSlide: { headline: string; subheadline: string }
+  slides: CarouselSlide[]
+  closingSlide: { headline: string; cta: string }
+  caption: string
+  hashtags: string[]
 }
 
 export interface ImagePromptOutput {

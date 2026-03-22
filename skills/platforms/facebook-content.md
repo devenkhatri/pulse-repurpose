@@ -52,8 +52,13 @@ Output format: JSON only, no markdown, no explanation.
 {
   "text": "full post text",
   "hashtags": [],
-  "format": "single"
+  "format": "single",
+  "hookVariants": ["Hook option 1 (first line alternative)", "Hook option 2", "Hook option 3"]
 }
+
+HOOK VARIANTS: Generate 2–3 warm, community-oriented alternative first lines the creator could swap in.
+Each variant must be ≤100 characters and match the brand voice.
+These are swappable opening lines — not full posts. Do not include hashtags in hookVariants.
 ```
 
 ## User prompt template
@@ -76,6 +81,7 @@ Return a JSON object matching ContentPromptOutput:
 {
   "systemPrompt": "<filled system prompt with brand voice injected>",
   "userPrompt": "<filled user prompt with linkedinText injected>",
+  "hookVariants": ["<hook alt 1>", "<hook alt 2>", "<hook alt 3>"],
   "context": {
     "platformLabel": "Facebook",
     "maxChars": 63206,
@@ -85,6 +91,9 @@ Return a JSON object matching ContentPromptOutput:
   }
 }
 ```
+
+`hookVariants` — 2–3 warm alternative opening lines (≤100 chars each) for the Facebook post.
+The creator can tap a chip in the UI to replace the first line.
 
 ## Learnings injection rules
 1. Facebook-specific approval patterns (from learnings.md ## Approval patterns ### Facebook)

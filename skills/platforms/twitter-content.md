@@ -61,8 +61,13 @@ Output format: JSON only, no markdown, no explanation.
   "text": "full tweet text or full thread with tweets separated by \n\n",
   "hashtags": ["tag1", "tag2"],
   "format": "single | thread",
-  "tweetCount": 1
+  "tweetCount": 1,
+  "hookVariants": ["Hook option 1 (first line alternative)", "Hook option 2", "Hook option 3"]
 }
+
+HOOK VARIANTS: Generate 2–3 short, punchy alternative first lines the creator could swap in.
+Each variant must be ≤60 characters, scroll-stopping, and match the brand voice.
+These are swappable opening lines — not full posts. Do not include hashtags in hookVariants.
 ```
 
 ## User prompt template
@@ -85,6 +90,7 @@ Return a JSON object matching ContentPromptOutput:
 {
   "systemPrompt": "<filled system prompt with brand voice injected>",
   "userPrompt": "<filled user prompt with linkedinText injected>",
+  "hookVariants": ["<hook alt 1>", "<hook alt 2>", "<hook alt 3>"],
   "context": {
     "platformLabel": "Twitter / X",
     "maxChars": 280,
@@ -94,6 +100,9 @@ Return a JSON object matching ContentPromptOutput:
   }
 }
 ```
+
+`hookVariants` — 2–3 short (≤60 chars each) scroll-stopping alternative opening lines for
+the Twitter post. The creator can tap a chip in the UI to replace the first line of their tweet.
 
 ## Learnings injection rules
 1. Twitter-specific approval patterns (from learnings.md ## Approval patterns ### Twitter)

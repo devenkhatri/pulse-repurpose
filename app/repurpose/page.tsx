@@ -10,9 +10,10 @@ import { SourcePostPanel } from "@/components/repurpose/SourcePostPanel"
 import { PlatformCard } from "@/components/repurpose/PlatformCard"
 import { GenerationStatusPanel } from "@/components/repurpose/GenerationStatusPanel"
 import { AIChatSidebar } from "@/components/repurpose/AIChatSidebar"
+import { CarouselPreview } from "@/components/repurpose/CarouselPreview"
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog"
 import { useRepurposeStore } from "@/stores/repurposeStore"
-import type { LinkedInPost, Platform } from "@/types"
+import type { LinkedInPost, Platform, CarouselPromptOutput } from "@/types"
 
 const POLL_INTERVAL_MS = 3000
 const POLL_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
@@ -148,6 +149,8 @@ function RepurposePageInner() {
   const [pollWarning, setPollWarning] = useState(false)
   const [showRegenConfirm, setShowRegenConfirm] = useState(false)
   const [showShortcutsDialog, setShowShortcutsDialog] = useState(false)
+  const [carousel, setCarousel] = useState<CarouselPromptOutput | null>(null)
+  const [carouselGenerating, setCarouselGenerating] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(() => {
     if (typeof window !== "undefined") {
       return localStorage.getItem("pulse.chat.collapsed") === "true"
@@ -314,6 +317,28 @@ function RepurposePageInner() {
   const handleRegenerateImageForPlatform = useCallback((platform: Platform) => {
     void handleTriggerImages([platform])
   }, [handleTriggerImages])
+
+  const handleToggleCarousel = useCallback(async () => {
+    // If carousel already loaded, toggle it off
+    if (carousel) {
+      setCarousel(null)
+      return
+    }
+    if (!activePost) return
+    setCarouselGenerating(true)
+    try {
+      const res = await axios.post<{ carousel: CarouselPromptOutput }>("/api/skills/carousel", {
+        postId: activePost.id,
+        linkedinText: activePost.linkedinText,
+      })
+      setCarousel(res.data.carousel)
+    } catch (err) {
+      const msg = extractApiError(err, "Failed to generate LinkedIn Carousel")
+      toast.error(msg)
+    } finally {
+      setCarouselGenerating(false)
+    }
+  }, [carousel, activePost])
 
   // ------------------------------------------------------------------
   // Approve all
@@ -581,10 +606,13 @@ function RepurposePageInner() {
               imageGenerationStatus={imageGenerationStatus}
               selectedPlatforms={selectedPlatforms}
               hasTextVariants={hasTextVariants}
+              carouselEnabled={!!carousel}
+              carouselGenerating={carouselGenerating}
               onTriggerRepurpose={handleTriggerRepurpose}
               onTriggerImages={() => handleTriggerImages()}
               onAbortText={handleAbortText}
               onAbortImages={handleAbortImages}
+              onToggleCarousel={handleToggleCarousel}
             />
           ) : (
             <div className="p-4">
@@ -618,6 +646,16 @@ function RepurposePageInner() {
               selectedPlatforms={selectedPlatforms}
               activePost={activePost}
             />
+          )}
+
+          {/* LinkedIn Carousel preview */}
+          {carousel && (
+            <div className="bg-[#161616] border border-[#7C3AED]/30 rounded-xl p-4">
+              <CarouselPreview
+                carousel={carousel}
+                onChange={setCarousel}
+              />
+            </div>
           )}
 
           {/* Platform cards */}

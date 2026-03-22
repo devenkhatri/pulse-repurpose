@@ -52,8 +52,13 @@ Output format: JSON only, no markdown, no explanation.
 {
   "text": "full post text",
   "hashtags": ["tag1"],
-  "format": "single"
+  "format": "single",
+  "hookVariants": ["Hook option 1 (first line alternative)", "Hook option 2", "Hook option 3"]
 }
+
+HOOK VARIANTS: Generate 2–3 short, conversational alternative first lines the creator could swap in.
+Each variant must be ≤80 characters, feel natural on Threads, and match the brand voice.
+These are swappable opening lines — not full posts. Do not include hashtags in hookVariants.
 ```
 
 ## User prompt template
@@ -76,6 +81,7 @@ Return a JSON object matching ContentPromptOutput:
 {
   "systemPrompt": "<filled system prompt with brand voice injected>",
   "userPrompt": "<filled user prompt with linkedinText injected>",
+  "hookVariants": ["<hook alt 1>", "<hook alt 2>", "<hook alt 3>"],
   "context": {
     "platformLabel": "Threads",
     "maxChars": 500,
@@ -85,6 +91,9 @@ Return a JSON object matching ContentPromptOutput:
   }
 }
 ```
+
+`hookVariants` — 2–3 conversational alternative opening lines (≤80 chars each) for the Threads
+post. The creator can tap a chip in the UI to replace the first line.
 
 ## Learnings injection rules
 1. Threads-specific approval patterns (from learnings.md ## Approval patterns ### Threads)

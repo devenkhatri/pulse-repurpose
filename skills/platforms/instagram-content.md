@@ -54,8 +54,13 @@ Output format: JSON only, no markdown, no explanation.
 {
   "text": "caption text WITHOUT hashtags",
   "hashtags": ["tag1", "tag2", "...up to 15"],
-  "format": "single"
+  "format": "single",
+  "hookVariants": ["Hook option 1 (first line alternative)", "Hook option 2", "Hook option 3"]
 }
+
+HOOK VARIANTS: Generate 2–3 strong alternative first lines (the hook before the "more" cutoff).
+Each variant must be ≤125 characters, story-opening in tone, and match the brand voice.
+These are swappable opening lines — not full captions. Do not include hashtags in hookVariants.
 ```
 
 ## User prompt template
@@ -78,6 +83,7 @@ Return a JSON object matching ContentPromptOutput:
 {
   "systemPrompt": "<filled system prompt with brand voice injected>",
   "userPrompt": "<filled user prompt with linkedinText injected>",
+  "hookVariants": ["<hook alt 1>", "<hook alt 2>", "<hook alt 3>"],
   "context": {
     "platformLabel": "Instagram",
     "maxChars": 2200,
@@ -87,6 +93,9 @@ Return a JSON object matching ContentPromptOutput:
   }
 }
 ```
+
+`hookVariants` — 2–3 alternative first lines (≤125 chars each) that work as the Instagram hook
+before the "more" cutoff. The creator can tap a chip in the UI to replace the first line.
 
 ## Learnings injection rules
 1. Instagram-specific approval patterns (from learnings.md ## Approval patterns ### Instagram)

@@ -17,6 +17,17 @@ import type { Platform, PlatformVariant, RepurposeVariantDraft } from "@/types"
 
 type SaveState = "idle" | "saving" | "saved" | "error"
 
+function parseHookVariants(contentPromptJson: string | null): string[] {
+  if (!contentPromptJson) return []
+  try {
+    const parsed = JSON.parse(contentPromptJson) as { hookVariants?: unknown }
+    if (Array.isArray(parsed.hookVariants)) {
+      return (parsed.hookVariants as unknown[]).filter((v): v is string => typeof v === "string")
+    }
+  } catch {}
+  return []
+}
+
 interface PlatformCardProps {
   platform: Platform
   postId: string
@@ -52,6 +63,8 @@ export function PlatformCard({
   const [saveState, setSaveState] = useState<SaveState>("idle")
   const saveResetRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const hookVariants = parseHookVariants(platformVariant.contentPrompt)
 
   const rules = PLATFORM_RULES[platform]
   const text = localVariant?.text ?? platformVariant.text ?? ""
@@ -232,6 +245,22 @@ export function PlatformCard({
     void doPublish()
   }
 
+  const handleApplyHook = (variant: string) => {
+    const current = localVariant?.text ?? platformVariant.text ?? ""
+    // Replace the first line (up to first \n or whole text if single line)
+    const newlineIdx = current.indexOf("\n")
+    const rest = newlineIdx !== -1 ? current.slice(newlineIdx) : ""
+    const newText = variant + rest
+    setVariantText(platform, newText)
+    // Mark as edited so onBlur triggers save
+    setVariantText(platform, newText)
+    // Trigger save
+    void axios.patch(`/api/posts/${postId}`, {
+      platform,
+      variant: { text: newText, isEdited: true },
+    }).then(() => markClean(platform)).catch(() => toast.error("Failed to save hook change"))
+  }
+
   const saveHashtags = async (updated: string[]) => {
     try {
       await axios.patch(`/api/posts/${postId}`, {
@@ -325,6 +354,28 @@ export function PlatformCard({
           />
         </div>
       </div>
+
+      {/* Hook picker — shown when hookVariants exist and post is not published */}
+      {hookVariants.length > 0 && !isPublished && text && (
+        <div
+          className="space-y-1.5"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <p className="text-[10px] text-[#555555] uppercase tracking-wider">Hook variants</p>
+          <div className="flex flex-wrap gap-1.5">
+            {hookVariants.map((variant, i) => (
+              <button
+                key={i}
+                onClick={() => handleApplyHook(variant)}
+                title={variant}
+                className="text-[11px] bg-[#1C1C1C] hover:bg-[#7C3AED]/20 border border-[#2A2A2A] hover:border-[#7C3AED]/50 text-[#888888] hover:text-[#A78BFA] px-2 py-1 rounded-lg transition-all text-left max-w-[200px] truncate"
+              >
+                {variant}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Textarea */}
       {(text || !isTextGenerating) && (
