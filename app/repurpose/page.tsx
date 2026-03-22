@@ -160,6 +160,11 @@ function RepurposePageInner() {
 
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollStartRef = useRef<number>(0)
+  /** Snapshot of each platform's content state at the moment polling begins */
+  const prePollStateRef = useRef<Partial<Record<Platform, { hasText: boolean; hasImage: boolean }>>>({})
+  /** How many consecutive polls have seen the exact same content snapshot */
+  const stableCountRef = useRef<number>(0)
+  const lastPollContentRef = useRef<string>("")
 
   // ------------------------------------------------------------------
   // Core fetch helper
@@ -186,6 +191,8 @@ function RepurposePageInner() {
       stopPolling()
       pollStartRef.current = Date.now()
       setPollWarning(false)
+      stableCountRef.current = 0
+      lastPollContentRef.current = ""
 
       pollIntervalRef.current = setInterval(async () => {
         try {
@@ -204,6 +211,17 @@ function RepurposePageInner() {
           setActivePost(post)
           initVariantsFromPost(post)
 
+          // Track content stability for partial success detection
+          const contentSnapshot = selectedPlatforms
+            .map((p) => (mode === "text" ? post.platforms[p]?.text ?? "" : post.platforms[p]?.imageUrl ?? ""))
+            .join("|")
+          if (contentSnapshot !== lastPollContentRef.current) {
+            stableCountRef.current = 0
+            lastPollContentRef.current = contentSnapshot
+          } else {
+            stableCountRef.current++
+          }
+
           if (mode === "text" && generationSettled(post, selectedPlatforms, "text")) {
             stopPolling()
             if (anyPlatformFailed(post, selectedPlatforms)) {
@@ -219,6 +237,29 @@ function RepurposePageInner() {
               toast.error("Some image generations failed — check n8n logs")
             } else {
               setImageGenerationStatus("done")
+            }
+          } else if (stableCountRef.current >= 3) {
+            // Content has been unchanged for 3+ polls (~9s) — detect partial success
+            const newPlatforms = selectedPlatforms.filter((p) => {
+              const before = prePollStateRef.current[p]
+              if (mode === "text") return !before?.hasText && !!post.platforms[p]?.text
+              return !before?.hasImage && !!post.platforms[p]?.imageUrl
+            })
+            if (newPlatforms.length > 0) {
+              stopPolling()
+              if (mode === "text") {
+                setGenerationStatus("done")
+                toast.warning(
+                  `${newPlatforms.length}/${selectedPlatforms.length} platforms generated — some may have been skipped by n8n`,
+                  { duration: 6000 }
+                )
+              } else {
+                setImageGenerationStatus("done")
+                toast.warning(
+                  `${newPlatforms.length}/${selectedPlatforms.length} images generated — some may have been skipped`,
+                  { duration: 6000 }
+                )
+              }
             }
           }
         } catch {
@@ -280,6 +321,15 @@ function RepurposePageInner() {
           postId: id,
           platforms: selectedPlatforms,
         })
+        // Snapshot pre-generation content state for partial success detection
+        if (activePost) {
+          prePollStateRef.current = Object.fromEntries(
+            selectedPlatforms.map((p) => [p, {
+              hasText: !!activePost.platforms[p]?.text,
+              hasImage: !!activePost.platforms[p]?.imageUrl,
+            }])
+          )
+        }
         startPolling(id, "text")
       } catch (err) {
         const msg = extractApiError(err, "Text generation could not be triggered")
@@ -303,6 +353,13 @@ function RepurposePageInner() {
         postId: activePost.id,
         platforms,
       })
+      // Snapshot pre-generation content state for partial success detection
+      prePollStateRef.current = Object.fromEntries(
+        platforms.map((p) => [p, {
+          hasText: !!activePost.platforms[p]?.text,
+          hasImage: !!activePost.platforms[p]?.imageUrl,
+        }])
+      )
       startPolling(activePost.id, "images")
     } catch (err) {
       const msg = extractApiError(err, "Image generation could not be triggered")

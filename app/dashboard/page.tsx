@@ -189,12 +189,12 @@ export default function DashboardPage() {
         }
         toast.success(`${platform} variant approved`)
       } catch (err) {
-        // Revert optimistic update on failure
-        updateVariantStatus(postId, platform, "pending")
+        // Re-fetch from Sheet to revert to actual state; fall back to optimistic revert
+        fetchPosts().catch(() => updateVariantStatus(postId, platform, "pending"))
         throw err
       }
     },
-    [updateVariantStatus]
+    [updateVariantStatus, fetchPosts]
   )
 
   const handleReject = useCallback(
@@ -216,12 +216,12 @@ export default function DashboardPage() {
         }
         toast.success(`${platform} variant moved back to pending`)
       } catch (err) {
-        // Revert optimistic update on failure
-        updateVariantStatus(postId, platform, "approved")
+        // Re-fetch from Sheet to revert to actual state; fall back to optimistic revert
+        fetchPosts().catch(() => updateVariantStatus(postId, platform, "approved"))
         throw err
       }
     },
-    [updateVariantStatus]
+    [updateVariantStatus, fetchPosts]
   )
 
   return (
