@@ -120,8 +120,8 @@ export function PostsTable({ posts, loading, error, onApprove, onReject }: Posts
       } else if (sort.column === "linkedinText") {
         cmp = (a.linkedinText ?? "").localeCompare(b.linkedinText ?? "")
       } else {
-        const pa = STATUS_PRIORITY[a.platforms[sort.column as Platform].status]
-        const pb = STATUS_PRIORITY[b.platforms[sort.column as Platform].status]
+        const pa = STATUS_PRIORITY[a.platforms[sort.column as Platform]?.status] ?? 99
+        const pb = STATUS_PRIORITY[b.platforms[sort.column as Platform]?.status] ?? 99
         cmp = pa - pb
       }
       return sort.direction === "asc" ? cmp : -cmp

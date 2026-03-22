@@ -15,7 +15,7 @@ const statusConfig: Record<PostStatus, { label: string; className: string }> = {
 }
 
 export function StatusBadge({ status, className }: StatusBadgeProps) {
-  const config = statusConfig[status]
+  const config = statusConfig[status] ?? statusConfig.pending
   return (
     <span
       className={cn(
