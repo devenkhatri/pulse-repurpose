@@ -8,24 +8,30 @@
         "width": 1600,
         "color": 0
       },
-      "id": "wf2-sticky-01-overview",
+      "id": "f4a51c59-2342-4941-9bc3-149adf30d679",
       "name": "Sticky Note — Overview",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [200, -260]
+      "position": [
+        1520,
+        256
+      ]
     },
     {
       "parameters": {
-        "content": "## ⚙️ Setup — Do This First\n\n**Step 1 — ImageRouter credential**\nCreate a **Header Auth** credential:\n- Name: `Authorization`\n- Value: `Bearer YOUR_IMAGEROUTER_API_KEY`\n\nOpen `HTTP - ImageRouter Generate` → Credential → select it.\n\n**Step 2 — Change model (optional)**\nIn the request body, `\"model\"` defaults to `gpt-image-1`.\nOther options depending on your ImageRouter plan:\n- `dall-e-3`\n- `stability-ai/stable-diffusion-xl`\n- `black-forest-labs/flux-1.1-pro`\n\n**Step 3 — Image size format**\nImageRouter uses `\"size\": \"WxH\"` (e.g. `\"1080x1080\"`).\nThe workflow builds this from `styleDirectives.width` × `styleDirectives.height` in the payload. Adjust if your provider uses a different format.\n\n**Step 4 — Google Sheets**\nIn `GSheets - Write Image URL`:\n- Replace `YOUR_SPREADSHEET_ID`\n- Set correct sheet tab name\n- Select your Google OAuth2 credential\n\n**Step 5 — Activate** after setup.",
+        "content": "## ⚙️ Setup — Do This First\n\n**Step 1 — ImageRouter credential**\nCreate a **Header Auth** credential:\n- Name: `Authorization`\n- Value: `Bearer YOUR_IMAGEROUTER_API_KEY`\n\nOpen `HTTP - ImageRouter Generate` → Credential → select it.\n\n**Step 2 — Change model (optional)**\nIn the request body, `\"model\"` defaults to `gpt-image-1`.\nOther options depending on your ImageRouter plan:\n- `dall-e-3`\n- `stability-ai/stable-diffusion-xl`\n- `black-forest-labs/flux-1.1-pro`\n\n**Step 3 — Image size format**\nImageRouter uses `\"size\": \"WxH\"` (e.g. `\"1080x1080\"`).\nThe workflow builds this from `styleDirectives.width` × `styleDirectives.height` in the payload. Adjust if your provider uses a different format.\n\n**Step 4 — n8n Variable: N8N_BASE_URL**\nIn n8n Admin → Variables, create:\n- Name: `N8N_BASE_URL`\n- Value: your n8n instance URL, e.g. `http://localhost:5678`\n\nThis workflow calls **Workflow 0 (Sheet Operations)** for all Google Sheets writes — no direct GSheets credential needed here.\n\n**Step 5 — Activate** after setup.",
         "height": 540,
         "width": 380,
         "color": 3
       },
-      "id": "wf2-sticky-02-setup",
+      "id": "70e37c17-d9c5-42a3-8981-77b9be656dba",
       "name": "Sticky Note — Setup",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [-210, 140]
+      "position": [
+        1120,
+        656
+      ]
     },
     {
       "parameters": {
@@ -34,37 +40,46 @@
         "width": 440,
         "color": 4
       },
-      "id": "wf2-sticky-03-split",
+      "id": "dc39c32c-d0e0-4622-a21f-d6ed2167b039",
       "name": "Sticky Note — Split Logic",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [420, 500]
+      "position": [
+        1536,
+        1024
+      ]
     },
     {
       "parameters": {
         "content": "## 🎨 ImageRouter API Node\n\nCalls the **OpenAI-compatible** image generation endpoint:\n`https://api.imagerouter.io/v1/openai/images/generations`\n\n**Request body:**\n```json\n{\n  \"model\": \"gpt-image-1\",\n  \"prompt\": \"<full prompt> --no <negativePrompt>\",\n  \"n\": 1,\n  \"size\": \"1080x1080\",\n  \"quality\": \"high\",\n  \"response_format\": \"url\"\n}\n```\n\n**Timeout:** 120 s — image generation is slow.\n\nThe response URL is a temporary CDN link. If you need permanent storage, add an HTTP Request node to upload the image to your own storage (S3, Cloudinary, etc.) before writing to the Sheet.",
-        "height": 300,
-        "width": 480,
+        "height": 380,
+        "width": 624,
         "color": 4
       },
-      "id": "wf2-sticky-04-imagerouter",
+      "id": "0c792a9c-4dd0-43ba-bb9b-18b6586fc6b0",
       "name": "Sticky Note — ImageRouter",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [640, 500]
+      "position": [
+        1872,
+        464
+      ]
     },
     {
       "parameters": {
-        "content": "## 💾 Write Image URL to Sheet\n\nUses conditional expressions so only the **active platform's** columns are updated:\n```\n\"twitter_image_url\": \"={{ $json.platform === 'twitter' ? $json.imageUrl : undefined }}\"\n```\nAlso writes `_image_prompt` for audit/debugging.\n\nMatches on `post_id` — never creates a new row.",
+        "content": "## 💾 Write Image URL via Workflow 0\n\nCalls the `pulse-sheet-ops` webhook (Workflow 0) with action `UPDATE_PLATFORM_VARIANT`.\n\nPayload: `{ postId, platform, variant: { imageUrl, imagePrompt } }`\n\nWorkflow 0 handles all column mapping and sheet updates centrally. Set the `N8N_BASE_URL` n8n variable to your instance URL (e.g. `http://localhost:5678`).",
         "height": 200,
         "width": 440,
         "color": 4
       },
-      "id": "wf2-sticky-05-gsheets",
+      "id": "0bb1332e-01fa-4685-a6e3-92005b0f7bfe",
       "name": "Sticky Note — GSheets Write",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [1080, 500]
+      "position": [
+        2400,
+        1024
+      ]
     },
     {
       "parameters": {
@@ -73,11 +88,14 @@
         "width": 440,
         "color": 4
       },
-      "id": "wf2-sticky-06-callback",
+      "id": "5643aef1-2aa1-4b29-ac31-33fe2191ad8f",
       "name": "Sticky Note — Callback",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [1300, 500]
+      "position": [
+        2624,
+        1024
+      ]
     },
     {
       "parameters": {
@@ -86,114 +104,68 @@
         "responseMode": "lastNode",
         "options": {}
       },
-      "id": "wf2-n01-webhook",
+      "id": "401ada33-af5a-412e-b96f-4b9045081264",
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [240, 300],
+      "position": [
+        1568,
+        816
+      ],
       "webhookId": "pulse-image-repurpose-webhook"
     },
     {
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "// Split incoming imagePayloads into one item per platform\nconst { postId, imagePayloads, callbackUrl } = $input.first().json;\n\nif (!postId || !imagePayloads || !callbackUrl) {\n  throw new Error('Missing required fields: postId, imagePayloads, callbackUrl');\n}\n\nconst items = [];\nfor (const [platform, imgPayload] of Object.entries(imagePayloads)) {\n  if (!imgPayload || !imgPayload.prompt) {\n    console.log(`Skipping ${platform} - missing image prompt`);\n    continue;\n  }\n  items.push({\n    json: {\n      postId,\n      platform,\n      prompt: imgPayload.prompt,\n      sourceImageUrl: imgPayload.sourceImageUrl || null,\n      styleDirectives: imgPayload.styleDirectives || {\n        aspectRatio: '1:1',\n        width: 1080,\n        height: 1080,\n        mood: 'professional',\n        colorTone: 'neutral',\n        composition: 'centered',\n        textOverlay: false\n      },\n      negativePrompt: imgPayload.negativePrompt || 'text, watermark, blurry, low quality',\n      callbackUrl\n    }\n  });\n}\n\nif (items.length === 0) {\n  throw new Error('No valid platforms with image payloads found');\n}\n\nreturn items;\n"
+        "jsCode": "// Split incoming imagePayloads into one item per platform\nconst _raw = $input.first().json;\nconst { postId, imagePayloads, callbackUrl } = _raw.body ?? _raw;\n\nif (!postId || !imagePayloads || !callbackUrl) {\n  throw new Error('Missing required fields: postId, imagePayloads, callbackUrl');\n}\n\nconst items = [];\nfor (const [platform, imgPayload] of Object.entries(imagePayloads)) {\n  if (!imgPayload || !imgPayload.prompt) {\n    console.log(`Skipping ${platform} - missing image prompt`);\n    continue;\n  }\n  items.push({\n    json: {\n      postId,\n      platform,\n      prompt: imgPayload.prompt,\n      sourceImageUrl: imgPayload.sourceImageUrl || null,\n      styleDirectives: imgPayload.styleDirectives || {\n        aspectRatio: '1:1',\n        width: 1080,\n        height: 1080,\n        mood: 'professional',\n        colorTone: 'neutral',\n        composition: 'centered',\n        textOverlay: false\n      },\n      negativePrompt: imgPayload.negativePrompt || 'text, watermark, blurry, low quality',\n      callbackUrl\n    }\n  });\n}\n\nif (items.length === 0) {\n  throw new Error('No valid platforms with image payloads found');\n}\n\nreturn items;\n"
       },
-      "id": "wf2-n02-split-platforms",
+      "id": "065e50fe-5d47-4219-8e56-4d63cb686571",
       "name": "Code - Split by Platform",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [460, 300]
+      "position": [
+        1760,
+        816
+      ]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://api.imagerouter.io/v1/openai/images/generations",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"gpt-image-1\",\n  \"prompt\": {{ JSON.stringify($json.prompt + (($json.negativePrompt && $json.negativePrompt.length > 0) ? ' --no ' + $json.negativePrompt : '')) }},\n  \"n\": 1,\n  \"size\": {{ JSON.stringify(($json.styleDirectives.width || 1080) + 'x' + ($json.styleDirectives.height || 1080)) }},\n  \"quality\": \"high\",\n  \"response_format\": \"url\"\n}",
-        "options": {
-          "timeout": 120000
-        }
+        "jsCode": "// Extract image URL from ImageRouter response\nconst postId = $('Code - Split by Platform').item.json.postId;\nconst platform = $('Code - Split by Platform').item.json.platform;\nconst prompt = $('Code - Split by Platform').item.json.prompt;\nconst callbackUrl = $('Code - Split by Platform').item.json.callbackUrl;\n\nconst response = $json;\n\n// ImageRouter returns the image URL in the output field\n// Safely extract URL — ImageRouter returns { data: [{ url }] }\nlet imageUrl = null;\ntry {\n  const data = response?.data;\n  if (Array.isArray(data) && data.length > 0) {\n    imageUrl = data[0]?.url?.trim() || null;\n  }\n  // Fallback: some providers return a top-level url or output field\n  if (!imageUrl) imageUrl = response?.url?.trim() || response?.output?.trim() || null;\n} catch (e) {\n  // response shape was unexpected — imageUrl stays null\n}\n\nif (!imageUrl) {\n  throw new Error(`ImageRouter returned no image URL for platform: ${platform}`);\n}\n\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    postId,\n    platform,\n    imageUrl,\n    imagePrompt: prompt,\n    callbackUrl,\n    generatedAt: now,\n    action: 'UPDATE_PLATFORM_VARIANT',\n    payload: { postId, platform, variant: { imageUrl, imagePrompt: prompt } }\n  }\n}];\n"
       },
-      "id": "wf2-n03-imagerouter",
-      "name": "HTTP - ImageRouter Generate",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [680, 300],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "YOUR_IMAGEROUTER_CREDENTIAL_ID",
-          "name": "ImageRouter API Key"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "jsCode": "// Extract image URL from ImageRouter response\nconst postId = $('Code - Split by Platform').item.json.postId;\nconst platform = $('Code - Split by Platform').item.json.platform;\nconst prompt = $('Code - Split by Platform').item.json.prompt;\nconst callbackUrl = $('Code - Split by Platform').item.json.callbackUrl;\n\nconst response = $json;\n\n// ImageRouter (OpenAI-compatible) returns data[0].url\nconst imageUrl = response?.data?.[0]?.url || response?.data?.[0]?.b64_json || null;\n\nif (!imageUrl) {\n  throw new Error(`ImageRouter returned no image URL for platform: ${platform}`);\n}\n\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    postId,\n    platform,\n    imageUrl,\n    imagePrompt: prompt,\n    callbackUrl,\n    generatedAt: now\n  }\n}];\n"
-      },
-      "id": "wf2-n04-extract-url",
+      "id": "d7fe70f2-5522-43a4-9bbd-57f7f67d9f2b",
       "name": "Code - Extract Image URL",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [900, 300]
+      "position": [
+        2272,
+        816
+      ]
     },
     {
       "parameters": {
-        "operation": "update",
-        "documentId": {
-          "__rl": true,
-          "value": "YOUR_SPREADSHEET_ID",
-          "mode": "id"
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": "Sheet1",
-          "mode": "name"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "post_id": "={{ $json.postId }}",
-            "twitter_image_url": "={{ $json.platform === 'twitter' ? $json.imageUrl : undefined }}",
-            "twitter_image_prompt": "={{ $json.platform === 'twitter' ? $json.imagePrompt : undefined }}",
-            "threads_image_url": "={{ $json.platform === 'threads' ? $json.imageUrl : undefined }}",
-            "threads_image_prompt": "={{ $json.platform === 'threads' ? $json.imagePrompt : undefined }}",
-            "instagram_image_url": "={{ $json.platform === 'instagram' ? $json.imageUrl : undefined }}",
-            "instagram_image_prompt": "={{ $json.platform === 'instagram' ? $json.imagePrompt : undefined }}",
-            "facebook_image_url": "={{ $json.platform === 'facebook' ? $json.imageUrl : undefined }}",
-            "facebook_image_prompt": "={{ $json.platform === 'facebook' ? $json.imagePrompt : undefined }}",
-            "skool_image_url": "={{ $json.platform === 'skool' ? $json.imageUrl : undefined }}",
-            "skool_image_prompt": "={{ $json.platform === 'skool' ? $json.imagePrompt : undefined }}"
-          },
-          "matchingColumns": ["post_id"],
-          "schema": []
-        },
+        "workflowId": "qDs4gGb_ZL67z_smPGNpK",
         "options": {}
       },
-      "id": "wf2-n05-gsheets-update",
-      "name": "GSheets - Write Image URL",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.4,
-      "position": [1120, 300],
-      "credentials": {
-        "googleSheetsOAuth2Api": {
-          "id": "YOUR_GOOGLE_CREDENTIAL_ID",
-          "name": "Google Sheets account"
-        }
-      }
+      "id": "8d12a56e-c37c-4f80-a508-4561d18a95ea",
+      "name": "Execute Workflow - Sheet Ops",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        2448,
+        816
+      ]
     },
     {
       "parameters": {
-        "mode": "runOnceForAllItems",
         "jsCode": "// Aggregate all platform image results and prepare callback\nconst items = $input.all();\nconst postId = items[0]?.json?.postId || '';\nlet callbackUrl = '';\ntry {\n  callbackUrl = $('Code - Extract Image URL').all()[0]?.json?.callbackUrl || '';\n} catch(e) {\n  callbackUrl = $('Webhook').first().json.callbackUrl || '';\n}\n\nreturn [{\n  json: {\n    postId,\n    callbackUrl,\n    status: 'done',\n    processedPlatforms: items.length\n  }\n}];\n"
       },
-      "id": "wf2-n06-aggregate",
+      "id": "674cb6fc-46e4-4f15-9ec6-f387deda4011",
       "name": "Code - Aggregate Results",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1340, 300]
+      "position": [
+        2672,
+        816
+      ]
     },
     {
       "parameters": {
@@ -206,13 +178,98 @@
           "timeout": 30000
         }
       },
-      "id": "wf2-n07-callback-success",
+      "id": "a3235125-34eb-4690-b9b7-96f0665290e9",
       "name": "HTTP - Callback Success",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1560, 300]
+      "position": [
+        2880,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "model": "google/nano-banana-2:free",
+        "prompt": "=You are an image generation assistant. Generate an image based on the user's prompt and return only the resulting image URL, with no additional text.\n\n{{ $json.prompt + (($json.negativePrompt && $json.negativePrompt.length > 0) ? ' --no ' + $json.negativePrompt : '') }}"
+      },
+      "type": "n8n-nodes-imagerouter.imageRouter",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        816
+      ],
+      "id": "efc55aa1-9a11-4d47-b001-ca6ee619b89f",
+      "name": "Post Image Generation",
+      "credentials": {
+        "imageRouterApi": {
+          "id": "zGIx6FeoupfOcW8i",
+          "name": "ImageRouter account"
+        }
+      }
     }
   ],
+  "pinData": {
+    "Webhook": [
+      {
+        "json": {
+          "headers": {
+            "host": "n8n.devengoratela.in",
+            "user-agent": "curl/8.7.1",
+            "content-length": "1259",
+            "accept": "*/*",
+            "accept-encoding": "gzip, br",
+            "cdn-loop": "cloudflare; loops=1",
+            "cf-connecting-ip": "2405:201:2025:e01a:6883:5b94:9729:81d4",
+            "cf-ipcountry": "IN",
+            "cf-ray": "9e05bfbf3e8cfdca-SIN",
+            "cf-visitor": "{\"scheme\":\"https\"}",
+            "cf-warp-tag-id": "9d125063-4091-4647-8301-3339f24c8fd1",
+            "connection": "keep-alive",
+            "content-type": "application/json",
+            "x-forwarded-for": "2405:201:2025:e01a:6883:5b94:9729:81d4",
+            "x-forwarded-proto": "https"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "postId": "POST_001",
+            "callbackUrl": "http://localhost:3000/api/callback/images",
+            "imagePayloads": {
+              "twitter": {
+                "prompt": "A modern, clean dashboard UI showing social media analytics graphs, dark theme, professional",
+                "negativePrompt": "text, watermark, blurry, low quality",
+                "sourceImageUrl": null,
+                "styleDirectives": {
+                  "aspectRatio": "16:9",
+                  "width": 1200,
+                  "height": 675,
+                  "mood": "professional",
+                  "colorTone": "dark"
+                }
+              },
+              "instagram": {
+                "prompt": "A vibrant, eye-catching social media tool interface with colorful data visualizations, square format",
+                "negativePrompt": "text, watermark, blurry",
+                "sourceImageUrl": null,
+                "styleDirectives": {
+                  "aspectRatio": "1:1",
+                  "width": 1080,
+                  "height": 1080,
+                  "mood": "vibrant",
+                  "colorTone": "bright"
+                }
+              }
+            }
+          },
+          "webhookUrl": "https://n8n.devengoratela.in/webhook/pulse-image-repurpose",
+          "executionMode": "production"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
   "connections": {
     "Webhook": {
       "main": [
@@ -229,18 +286,7 @@
       "main": [
         [
           {
-            "node": "HTTP - ImageRouter Generate",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP - ImageRouter Generate": {
-      "main": [
-        [
-          {
-            "node": "Code - Extract Image URL",
+            "node": "Post Image Generation",
             "type": "main",
             "index": 0
           }
@@ -251,14 +297,14 @@
       "main": [
         [
           {
-            "node": "GSheets - Write Image URL",
+            "node": "Execute Workflow - Sheet Ops",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "GSheets - Write Image URL": {
+    "Execute Workflow - Sheet Ops": {
       "main": [
         [
           {
@@ -279,26 +325,35 @@
           }
         ]
       ]
+    },
+    "Post Image Generation": {
+      "main": [
+        [
+          {
+            "node": "Code - Extract Image URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "pinData": {},
-  "active": false,
+  "active": true,
   "settings": {
     "executionOrder": "v1",
-    "saveDataErrorExecution": "all",
-    "saveDataSuccessExecution": "none"
+    "availableInMCP": false
   },
-  "versionId": "wf2-pulse-image-repurpose-v1",
+  "versionId": "93c956f4-a010-4e86-8544-1a175e9e82d4",
   "meta": {
-    "templateCredsSetupCompleted": false,
-    "instanceId": "pulse-repurpose"
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5112a5ff13f41a8d605b5aeac947e15fc8e5070011cb0ffcac8f2afa1cc948a9"
   },
-  "id": "pulse-workflow-2",
+  "id": "AjHAVh6JagJHHNYESqMVL",
   "tags": [
     {
-      "createdAt": "2026-03-22T00:00:00.000Z",
-      "updatedAt": "2026-03-22T00:00:00.000Z",
-      "id": "tag-pulse",
+      "updatedAt": "2026-03-22T12:13:44.659Z",
+      "createdAt": "2026-03-22T12:13:44.659Z",
+      "id": "B4TQmEgyNeGfod4D",
       "name": "pulse"
     }
   ]
