@@ -1,3933 +1,18 @@
-# Claude Code Prompt — Content Repurposing App ("Pulse Repurpose")
+# Claude Code Prompt — Pulse Repurpose (Full Build Spec)
 
-## Project overview
+> This is the complete, authoritative spec for rebuilding **Pulse Repurpose** from scratch.
+> Every feature, route, component, type, config file, memory file, and architectural decision is documented here.
+> Follow this spec exactly — no guessing, no adding things not listed, no simplifying things that are specified.
 
-Build a full-stack web application called **Pulse Repurpose** — a personal content operations tool that takes LinkedIn posts and repurposes them for Twitter/X, Threads, Instagram, Facebook, and Skool Community. The app is a thin orchestrator and review UI — it fires webhooks to n8n workflows which handle all AI calls (Claude for text, fal.ai for images) and all publishing end-to-end. The app is responsible for: triggering n8n workflows, polling Google Sheets for results, displaying and editing variants, hashtag intelligence (Claude called directly from app), brand voice profile management, content calendar, and approving/scheduling posts. Google Sheets is the master data tracker. Everything is local-first — this runs on localhost for personal use.
-
-### Webhook architecture — three separate n8n workflows
-
-The app communicates with n8n via three distinct webhook URLs, each triggering an independent workflow:
-
-1. **Content repurpose webhook** — App sends post text + brand voice payload → n8n calls Claude API for all 5 platforms in parallel → n8n writes generated text + hashtags back to Google Sheet → n8n calls app callback endpoint to notify completion.
-2. **Image repurpose webhook** — App sends post ID + image prompts per platform → n8n calls fal.ai for all 5 platforms in parallel → n8n writes image URLs back to Google Sheet → n8n calls app callback endpoint to notify completion.
-3. **Publish webhook** — App sends approved variant data → n8n routes by platform and publishes → n8n writes published status + timestamp back to Sheet. (Option A single-router workflow, unchanged from prior spec.)
-
-The app never calls Claude or fal.ai directly for repurposing. It only calls Claude directly for the AI chat sidebar (in-session edits) and hashtag suggestions, since those are interactive and synchronous by nature.
-
----
-
-## Tech stack
-
-- **Framework**: Next.js 14 (App Router)
-- **Language**: TypeScript throughout — no `any` types
-- **Styling**: Tailwind CSS + shadcn/ui components
-- **AI (direct — chat sidebar + hashtags only)**: Anthropic Claude API (`claude-sonnet-4-20250514`)
-- **AI (repurpose + images — via n8n)**: Claude + fal.ai called by n8n, not the app
-- **Google Sheets**: Google Sheets API v4 via service account (read + write)
-- **State management**: Zustand
-- **Forms**: React Hook Form + Zod validation
-- **Calendar**: FullCalendar (React)
-- **Drag and drop**: @dnd-kit/core for calendar rescheduling
-- **HTTP client**: Axios
-- **Date handling**: date-fns
-- **Notifications**: Sonner (toast notifications)
-- **Icons**: Lucide React
-
----
-
-## Project structure
-
-```
-pulse-repurpose/
-├── app/
-│   ├── layout.tsx                  # Root layout with sidebar nav
-│   ├── page.tsx                    # Redirect to /dashboard
-│   ├── dashboard/
-│   │   └── page.tsx
-│   ├── repurpose/
-│   │   └── page.tsx
-│   ├── calendar/
-│   │   └── page.tsx
-│   ├── settings/
-│   │   └── page.tsx                # Brand voice profile
-│   └── api/
-│       ├── posts/
-│       │   ├── route.ts            # GET all posts from Sheet
-│       │   └── [id]/
-│       │       └── route.ts        # GET/PATCH single post
-│       ├── trigger/
-│       │   ├── repurpose/
-│       │   │   └── route.ts        # POST — fire content repurpose webhook to n8n
-│       │   └── images/
-│       │       └── route.ts        # POST — fire image repurpose webhook to n8n
-│       ├── callback/
-│       │   ├── repurpose/
-│       │   │   └── route.ts        # POST — n8n calls this when text generation is done
-│       │   └── images/
-│       │       └── route.ts        # POST — n8n calls this when image generation is done
-│       ├── hashtags/
-│       │   └── route.ts            # POST — generate hashtag suggestions (Claude direct)
-│       ├── chat/
-│       │   └── route.ts            # POST — AI chat sidebar (Claude direct)
-│       ├── publish/
-│       │   └── route.ts            # POST — fire publish webhook to n8n
-│       ├── skills/
-│       │   ├── repurpose/
-│       │   │   └── route.ts        # POST — memory-aware master repurpose skill executor
-│       │   └── platform-prompt/
-│       │       └── route.ts        # POST — executes any platform skill, returns prompt payload
-│       ├── brand-voice/
-│       │   └── route.ts            # GET/POST brand voice config
-│       ├── hashtag-bank/
-│       │   └── route.ts            # GET/POST/DELETE hashtag bank entries
-│       └── docs/
-│           ├── sync/
-│           │   └── route.ts        # POST — trigger doc regeneration after feature changes
-│           └── status/
-│               └── route.ts        # GET — check which docs are stale
-├── components/
-│   ├── layout/
-│   │   ├── Sidebar.tsx
-│   │   └── TopBar.tsx
-│   ├── dashboard/
-│   │   ├── PostsTable.tsx
-│   │   ├── PostRow.tsx
-│   │   ├── StatusBadge.tsx
-│   │   └── PlatformStatusGrid.tsx
-│   ├── repurpose/
-│   │   ├── SourcePostPanel.tsx
-│   │   ├── PlatformCard.tsx
-│   │   ├── ImagePreview.tsx
-│   │   ├── HashtagSuggestions.tsx
-│   │   ├── AIChatSidebar.tsx
-│   │   ├── GenerationStatusPanel.tsx   # Shows n8n workflow progress
-│   │   └── ApproveButton.tsx
-│   ├── calendar/
-│   │   ├── CalendarView.tsx
-│   │   ├── EventPopover.tsx
-│   │   └── GapWarningBanner.tsx
-│   ├── settings/
-│   │   ├── BrandVoiceForm.tsx
-│   │   ├── ExamplePostsInput.tsx
-│   │   ├── AvoidListInput.tsx
-│   │   ├── TopicPillarsInput.tsx
-│   │   └── HashtagBankManager.tsx
-│   └── shared/
-│       ├── PlatformIcon.tsx
-│       ├── LoadingSpinner.tsx
-│       └── ConfirmDialog.tsx
-├── lib/
-│   ├── anthropic.ts                # Claude API client — chat sidebar + hashtags ONLY
-│   ├── n8n.ts                      # All four webhook fire helpers (sheet + repurpose + images + publish)
-│   ├── n8n-sheet.ts                # Typed helper for all Sheet operations via n8n webhook
-│   ├── content-store.ts            # Read/write content .md files per post per platform
-│   ├── docs-sync.ts                # Doc impact map, context builder, Claude + template generators
-│   ├── brand-voice.ts              # Read/write brand voice config JSON
-│   ├── hashtag-bank.ts             # Read/write hashtag bank JSON
-│   ├── platform-rules.ts           # Per-platform constraints and prompt rules
-│   └── utils.ts                    # Shared utilities
-├── stores/
-│   ├── postsStore.ts               # Zustand — posts state
-│   ├── repurposeStore.ts           # Zustand — current repurpose session + generation status
-│   └── settingsStore.ts            # Zustand — brand voice + hashtag bank
-├── types/
-│   └── index.ts                    # All TypeScript interfaces
-├── config/
-│   ├── brand-voice.json            # Persisted brand voice profile
-│   └── hashtag-bank.json           # Persisted hashtag bank
-├── .env.local                      # All secrets
-├── README.md
-├── CHANGELOG.md                    # Append-only change journal — written by Claude Code after every task
-│
-├── SOUL.md                         # App identity, values, operating principles
-├── Heartbeat.md                    # Master index — points to all living system files
-│
-├── memory/
-│   ├── USER.md                     # Who the user is, preferences, observed patterns
-│   ├── MEMORY.md                   # Rolling working memory — current context + state
-│   ├── learnings.md                # Accumulated learnings across all sessions
-│   └── daily/
-│       ├── YYYY-MM-DD.md           # Auto-generated daily memory snapshot (one per day)
-│       └── ...
-│
-├── skills/
-│   ├── repurpose.md                # Master repurpose skill (orchestrates platform skills)
-│   ├── cron.md                     # Cron skill — scheduled automation runbook
-│   └── platforms/
-│       ├── twitter-content.md      # Twitter/X content prompt factory
-│       ├── twitter-image.md        # Twitter/X image prompt factory
-│       ├── threads-content.md      # Threads content prompt factory
-│       ├── threads-image.md        # Threads image prompt factory
-│       ├── instagram-content.md    # Instagram content prompt factory
-│       ├── instagram-image.md      # Instagram image prompt factory
-│       ├── facebook-content.md     # Facebook content prompt factory
-│       ├── facebook-image.md       # Facebook image prompt factory
-│       ├── skool-content.md        # Skool content prompt factory
-│       └── skool-image.md          # Skool image prompt factory
-│
-└── content/
-    └── [post_id]/                  # One folder per LinkedIn post (e.g. post_001/)
-        ├── _source.md              # Original LinkedIn post text + metadata
-        ├── twitter.md              # Repurposed Twitter/X variant
-        ├── threads.md              # Repurposed Threads variant
-        ├── instagram.md            # Repurposed Instagram variant
-        ├── facebook.md             # Repurposed Facebook variant
-        └── skool.md                # Repurposed Skool variant
-```
-
----
-
-## Environment variables (.env.local)
-
-```env
-# Anthropic — used only for chat sidebar and hashtag suggestions
-ANTHROPIC_API_KEY=
-
-# n8n — four separate webhook URLs, one per workflow
-N8N_SHEET_WEBHOOK_URL=                 # Webhook 0: all Google Sheet read/write operations
-N8N_CONTENT_REPURPOSE_WEBHOOK_URL=     # Webhook 1: receives pre-built prompt payloads from platform skills, calls Claude
-N8N_IMAGE_REPURPOSE_WEBHOOK_URL=       # Webhook 2: receives pre-built image payloads from platform skills, calls fal.ai
-N8N_PUBLISH_WEBHOOK_URL=               # Webhook 3: publishes to platforms
-
-# App — used by n8n to call back when async workflows complete
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-
-# No Google Sheets credentials here — all Sheet access is handled exclusively by n8n
-```
-
----
-
-## TypeScript types (types/index.ts)
-
-Define all shared types here. Every other file imports from this file.
-
-```typescript
-export type Platform = 'twitter' | 'threads' | 'instagram' | 'facebook' | 'skool' | 'linkedin'
-
-export type PostStatus = 'pending' | 'approved' | 'scheduled' | 'published' | 'failed'
-
-export type GenerationStatus = 'idle' | 'generating_text' | 'generating_images' | 'done' | 'failed'
-
-export interface LinkedInPost {
-  id: string                        // Unique row ID from Sheet (row number as string)
-  linkedinText: string              // Original LinkedIn post text
-  linkedinImageUrl: string | null   // Original image URL if available
-  postedAt: string                  // ISO date string
-  platforms: Record<Platform, PlatformVariant>
-}
-
-export interface PlatformVariant {
-  text: string | null
-  contentPrompt: string | null      // JSON string of { systemPrompt, userPrompt } from content skill — Sheet col F/O/X/AG/AP
-  imagePrompt: string | null        // fal.ai prompt string from image skill — Sheet col G/P/Y/AH/AQ
-  imageUrl: string | null
-  hashtags: string[]
-  status: PostStatus
-  generatedAt: string | null        // ISO date string, set when AI generates
-  scheduledAt: string | null        // ISO date string
-  publishedAt: string | null        // ISO date string
-  approvedAt: string | null         // ISO date string, set when user approves
-  isEdited: boolean
-  error: string | null
-}
-
-export interface BrandVoiceProfile {
-  toneDescriptors: string[]         // e.g. ["direct", "practical", "no fluff"]
-  writingStyle: string              // Free text paragraph describing writing style
-  topicPillars: string[]            // e.g. ["solopreneurship", "AI tools", "productivity"]
-  avoidList: string[]               // Words, phrases, or patterns to never use
-  examplePosts: string[]            // 3–5 raw LinkedIn post texts the user loves
-  lastUpdated: string               // ISO date string
-}
-
-export interface HashtagBankEntry {
-  id: string
-  hashtag: string                   // Without # prefix
-  platforms: Platform[]             // Which platforms this is relevant for
-  topicPillar: string | null        // Which pillar it belongs to
-  usageCount: number
-  lastUsed: string | null
-}
-
-export interface RepurposeSession {
-  sourcePost: LinkedInPost
-  variants: Record<Platform, RepurposeVariantDraft>
-  activeChat: ChatMessage[]
-  activePlatform: Platform | null
-  generationStatus: GenerationStatus
-  imageGenerationStatus: GenerationStatus
-}
-
-export interface RepurposeVariantDraft {
-  text: string
-  imageUrl: string | null
-  imagePrompt: string | null        // The prompt n8n will use to generate the image
-  hashtags: string[]
-  suggestedHashtags: string[]       // From AI, not yet added
-  isApproved: boolean
-  isEdited: boolean                 // True if user manually edited the AI output
-}
-
-export interface ChatMessage {
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: string
-}
-
-// Webhook 1: App → n8n content repurpose workflow
-export interface ContentRepurposeWebhookPayload {
-  postId: string
-  linkedinText: string
-  platforms: Platform[]             // Which platforms to generate for
-  brandVoice: {
-    toneDescriptors: string[]
-    writingStyle: string
-    topicPillars: string[]
-    avoidList: string[]
-    examplePosts: string[]
-  }
-  hashtagBank: Array<{
-    hashtag: string
-    platforms: Platform[]
-    topicPillar: string | null
-  }>
-  callbackUrl: string               // App's /api/callback/repurpose endpoint
-}
-
-// Webhook 2: App → n8n image repurpose workflow
-export interface ImageRepurposeWebhookPayload {
-  postId: string
-  imagePrompts: Partial<Record<Platform, string>>  // Per-platform image prompts
-  imageSizes: Partial<Record<Platform, { width: number; height: number }>>
-  callbackUrl: string               // App's /api/callback/images endpoint
-}
-
-// Webhook 3: App → n8n publish workflow (unchanged Option A router)
-export interface PublishWebhookPayload {
-  platform: Platform
-  text: string
-  imageUrl: string | null
-  hashtags: string[]
-  scheduledAt: string | null
-  sheetRowId: string
-  postId: string
-}
-
-// n8n → App callback (after content or image generation is done)
-export interface N8nCallbackPayload {
-  postId: string
-  status: 'done' | 'failed'
-  error?: string
-  // n8n writes results directly to Sheet; callback just notifies the app to re-poll
-}
-
-export interface CalendarEvent {
-  id: string
-  postId: string
-  platform: Platform
-  title: string                     // First 60 chars of text
-  start: Date
-  status: PostStatus
-  color: string                     // Platform color hex
-}
-
-export interface GapWarning {
-  platform: Platform
-  lastPostDate: string
-  daysGap: number
-  pillarGap: string | null          // e.g. "No AI tools content in 10 days"
-}
-```
-
----
-
-## Google Sheets schema
-
-The spreadsheet must have a sheet named **"Posts"** with the following columns in exact order. This schema is configured once inside n8n — the app has no knowledge of column positions and never accesses the Sheet directly.
-
-```
-Column A:  post_id               (string — unique, e.g. "post_001")
-Column B:  linkedin_text         (string — full post text)
-Column C:  linkedin_image_url    (string or empty)
-Column D:  posted_at             (ISO date string)
-
-Each platform uses 9 columns in order: text, content_prompt, image_prompt, image_url, hashtags, status, scheduled_at, published_at, error.
-
-- content_prompt: JSON string of { systemPrompt, userPrompt } — written by the app when the content skill executes, before the n8n webhook fires. Stored for audit, debugging, and learning system reference.
-- image_prompt: the exact fal.ai generation prompt string — written by the image skill before the image webhook fires.
-
-Column E:  twitter_text
-Column F:  twitter_content_prompt  (JSON — { systemPrompt, userPrompt } from twitter-content.md skill)
-Column G:  twitter_image_prompt    (fal.ai prompt string from twitter-image.md skill)
-Column H:  twitter_image_url
-Column I:  twitter_hashtags        (comma-separated, no # prefix)
-Column J:  twitter_status          (pending/approved/scheduled/published/failed)
-Column K:  twitter_scheduled_at    (ISO date string or empty)
-Column L:  twitter_published_at    (ISO date string or empty)
-Column M:  twitter_error           (error message or empty)
-
-Column N:  threads_text
-Column O:  threads_content_prompt
-Column P:  threads_image_prompt
-Column Q:  threads_image_url
-Column R:  threads_hashtags
-Column S:  threads_status
-Column T:  threads_scheduled_at
-Column U:  threads_published_at
-Column V:  threads_error
-
-Column W:  instagram_text
-Column X:  instagram_content_prompt
-Column Y:  instagram_image_prompt
-Column Z:  instagram_image_url
-Column AA: instagram_hashtags
-Column AB: instagram_status
-Column AC: instagram_scheduled_at
-Column AD: instagram_published_at
-Column AE: instagram_error
-
-Column AF: facebook_text
-Column AG: facebook_content_prompt
-Column AH: facebook_image_prompt
-Column AI: facebook_image_url
-Column AJ: facebook_hashtags
-Column AK: facebook_status
-Column AL: facebook_scheduled_at
-Column AM: facebook_published_at
-Column AN: facebook_error
-
-Column AO: skool_text
-Column AP: skool_content_prompt
-Column AQ: skool_image_prompt
-Column AR: skool_image_url
-Column AS: skool_hashtags
-Column AT: skool_status
-Column AU: skool_scheduled_at
-Column AV: skool_published_at
-Column AW: skool_error
-```
-
----
-
-## Google Sheets workflow — n8n Webhook 0 (lib/n8n-sheet.ts)
-
-All Sheet reads and writes go through a single n8n webhook URL (`N8N_SHEET_WEBHOOK_URL`). The app sends a structured action payload; n8n handles the Sheet operation and returns the result synchronously in the HTTP response.
-
-The app has **zero Google credentials** and **no Sheets SDK**. `googleapis` is not installed. All Sheet logic — column mapping, row lookup, batch updates, rate limit handling — lives exclusively inside n8n.
-
-### Webhook payload structure
-
-Every request to the Sheet webhook follows this envelope:
-
-```typescript
-interface SheetWebhookRequest {
-  action: SheetAction
-  payload: SheetActionPayload[SheetAction]
-}
-
-type SheetAction =
-  | 'GET_ALL_POSTS'
-  | 'GET_POST_BY_ID'
-  | 'UPDATE_PLATFORM_VARIANT'
-  | 'UPDATE_MULTIPLE_PLATFORMS'
-  | 'WRITE_CONTENT_PROMPTS'
-  | 'WRITE_IMAGE_PROMPTS'
-  | 'UPDATE_STATUS'
-```
-
-### Actions and payloads
-
-**GET_ALL_POSTS**
-```typescript
-// Request payload: none (empty object)
-// Response: { posts: LinkedInPost[] }
-// n8n reads all rows, maps columns to LinkedInPost[], skips rows with empty post_id
-// Supports optional filters passed as payload:
-{
-  statusFilter?: PostStatus        // only return posts where any platform has this status
-  platformFilter?: Platform        // only return posts that have content for this platform
-  fromDate?: string                // ISO date — filter by posted_at
-  toDate?: string                  // ISO date — filter by posted_at
-}
-```
-
-**GET_POST_BY_ID**
-```typescript
-// Request payload:
-{ postId: string }
-// Response: { post: LinkedInPost | null }
-```
-
-**UPDATE_PLATFORM_VARIANT**
-```typescript
-// Request payload: update a single platform's columns for one post
-{
-  postId: string
-  platform: Platform
-  variant: Partial<PlatformVariant>  // only provided fields are written
-}
-// Response: { success: boolean }
-```
-
-**UPDATE_MULTIPLE_PLATFORMS**
-```typescript
-// Request payload: batch update multiple platforms at once
-{
-  postId: string
-  variants: Partial<Record<Platform, Partial<PlatformVariant>>>
-}
-// Response: { success: boolean }
-// n8n does a single batch update call to Sheets for all platforms at once
-```
-
-**WRITE_CONTENT_PROMPTS**
-```typescript
-// Request payload: write content prompts before firing content repurpose webhook
-// n8n writes all platform content_prompt columns as JSON strings
-{
-  postId: string
-  prompts: Partial<Record<Platform, string>>  // JSON.stringify({ systemPrompt, userPrompt }) per platform
-}
-// Response: { success: boolean }
-```
-
-**WRITE_IMAGE_PROMPTS**
-```typescript
-// Request payload: write image prompts before firing image repurpose webhook
-// n8n writes all platform image_prompt columns
-{
-  postId: string
-  prompts: Partial<Record<Platform, string>>  // fal.ai prompt string per platform
-}
-// Response: { success: boolean }
-```
-
-**UPDATE_STATUS**
-```typescript
-// Request payload: lightweight status-only update (used by publish workflow callbacks)
-{
-  postId: string
-  platform: Platform
-  status: PostStatus
-  publishedAt?: string   // set when status = 'published'
-  error?: string         // set when status = 'failed'
-}
-// Response: { success: boolean }
-```
-
-### lib/n8n-sheet.ts — app-side helper
-
-This file wraps all Sheet webhook calls with typed functions. Every function POSTs to `N8N_SHEET_WEBHOOK_URL` with the action envelope and returns the typed response.
-
-```typescript
-// All functions follow this pattern:
-async function sheetRequest<T>(action: SheetAction, payload: object): Promise<T> {
-  const response = await axios.post(process.env.N8N_SHEET_WEBHOOK_URL, { action, payload }, { timeout: 15000 })
-  if (!response.data?.success && action !== 'GET_ALL_POSTS' && action !== 'GET_POST_BY_ID') {
-    throw new Error(`Sheet operation ${action} failed`)
-  }
-  return response.data
-}
-
-export async function getAllPosts(filters?: GetAllPostsFilters): Promise<LinkedInPost[]>
-export async function getPostById(postId: string): Promise<LinkedInPost | null>
-export async function updatePlatformVariant(postId: string, platform: Platform, variant: Partial<PlatformVariant>): Promise<void>
-export async function updateMultiplePlatforms(postId: string, variants: Partial<Record<Platform, Partial<PlatformVariant>>>): Promise<void>
-export async function writeContentPrompts(postId: string, prompts: Partial<Record<Platform, string>>): Promise<void>  // prompts = JSON.stringify({ systemPrompt, userPrompt }) per platform
-export async function writeImagePrompts(postId: string, prompts: Partial<Record<Platform, string>>): Promise<void>
-export async function updateStatus(postId: string, platform: Platform, status: PostStatus, meta?: { publishedAt?: string; error?: string }): Promise<void>
-```
-
-Timeout is 15 seconds for read operations (Sheet may have many rows), 10 seconds for writes.
-
-### n8n Workflow 0 — Sheet operations spec
-
-**Trigger**: Webhook node (POST), responds synchronously (not fire-and-forget).
-
-**Important**: Unlike the other three workflows, this webhook must respond with data — n8n should NOT use "Respond to Webhook" immediately. It must complete the Sheet operation first, then respond.
-
-**Steps**:
-1. Receive `{ action, payload }` from app
-2. Switch node on `action` value — 7 branches
-3. Each branch executes the appropriate Google Sheets node operation:
-   - `GET_ALL_POSTS` → Read all rows from "Posts" sheet, apply filters if present, map to `LinkedInPost[]` structure using a Code node, return `{ posts: [...] }`
-   - `GET_POST_BY_ID` → Read all rows, find by `post_id` column, return `{ post: {...} }` or `{ post: null }`
-   - `UPDATE_PLATFORM_VARIANT` → Update only the specific platform columns for the matching row. Use a Code node to map `PlatformVariant` fields to the correct column letters.
-   - `UPDATE_MULTIPLE_PLATFORMS` → Same as above but loops over all provided platforms in a single batch update
-   - `WRITE_IMAGE_PROMPTS` → Write each platform's `image_prompt` column value for the matching row
-   - `UPDATE_STATUS` → Write `status`, optionally `published_at` and `error` columns for the matching platform
-4. All branches end at a "Respond to Webhook" node returning the result as JSON
-5. On any error: return `{ success: false, error: "message" }` with HTTP 200 (not 500 — the app handles all error checking from the response body)
-
-**Column mapping in n8n**: Use a Code node that defines a constant mapping object:
-```javascript
-const COLUMN_MAP = {
-  twitter:   { text: 'E', contentPrompt: 'F', imagePrompt: 'G', imageUrl: 'H', hashtags: 'I', status: 'J', scheduledAt: 'K', publishedAt: 'L', error: 'M' },
-  threads:   { text: 'N', contentPrompt: 'O', imagePrompt: 'P', imageUrl: 'Q', hashtags: 'R', status: 'S', scheduledAt: 'T', publishedAt: 'U', error: 'V' },
-  instagram: { text: 'W', contentPrompt: 'X', imagePrompt: 'Y', imageUrl: 'Z', hashtags: 'AA', status: 'AB', scheduledAt: 'AC', publishedAt: 'AD', error: 'AE' },
-  facebook:  { text: 'AF', contentPrompt: 'AG', imagePrompt: 'AH', imageUrl: 'AI', hashtags: 'AJ', status: 'AK', scheduledAt: 'AL', publishedAt: 'AM', error: 'AN' },
-  skool:     { text: 'AO', contentPrompt: 'AP', imagePrompt: 'AQ', imageUrl: 'AR', hashtags: 'AS', status: 'AT', scheduledAt: 'AU', publishedAt: 'AV', error: 'AW' },
-}
-```
-This mapping is referenced by all write branches so column positions are defined in exactly one place inside n8n.
-
----
-
-## Platform rules (lib/platform-rules.ts)
-
-This file is the single source of truth for all platform-specific constraints. Every prompt builder and UI component reads from here.
-
-```typescript
-export const PLATFORM_RULES = {
-  twitter: {
-    label: 'Twitter / X',
-    color: '#000000',
-    maxChars: 280,
-    threadEnabled: true,            // Can generate as thread if over 280 chars
-    maxThreadTweets: 10,
-    imageAspectRatio: '16:9',       // or '1:1'
-    imageWidth: 1200,
-    imageHeight: 675,
-    hashtagCount: { min: 1, max: 3 },
-    tone: 'punchy, hook-first, no filler words, each tweet self-contained',
-    formatRules: 'Start with a bold hook. Use short punchy sentences. If thread, number tweets 1/ 2/ etc. No corporate language.',
-    avoidPatterns: ['Let me know your thoughts', 'Comment below', 'long sentences over 20 words'],
-  },
-  threads: {
-    label: 'Threads',
-    color: '#000000',
-    maxChars: 500,
-    threadEnabled: false,
-    maxThreadTweets: null,
-    imageAspectRatio: '1:1',
-    imageWidth: 1080,
-    imageHeight: 1080,
-    hashtagCount: { min: 0, max: 5 },
-    tone: 'conversational, casual, like texting a smart friend',
-    formatRules: 'Write as if talking to someone directly. Short paragraphs. Casual contractions ok. Can end with a soft question.',
-    avoidPatterns: ['hashtag spam', 'overly formal language'],
-  },
-  instagram: {
-    label: 'Instagram',
-    color: '#E1306C',
-    maxChars: 2200,
-    threadEnabled: false,
-    maxThreadTweets: null,
-    imageAspectRatio: '1:1',
-    imageWidth: 1080,
-    imageHeight: 1080,
-    hashtagCount: { min: 5, max: 15 },
-    tone: 'story-driven, personal, visual-first mindset',
-    formatRules: 'Lead with a strong first line (visible before "more"). Tell a mini story. Put hashtags at the very end, separated by line breaks. Use line breaks generously for readability.',
-    avoidPatterns: ['link in bio (no links work)', 'excessive emojis'],
-  },
-  facebook: {
-    label: 'Facebook',
-    color: '#1877F2',
-    maxChars: 63206,
-    threadEnabled: false,
-    maxThreadTweets: null,
-    imageAspectRatio: '16:9',
-    imageWidth: 1200,
-    imageHeight: 630,
-    hashtagCount: { min: 0, max: 3 },
-    tone: 'warm, community-oriented, slightly longer form ok',
-    formatRules: 'Can be longer than other platforms. End with a direct question to drive comments. Paragraphs over bullet points. Personal tone.',
-    avoidPatterns: ['aggressive CTAs', 'spammy hashtags'],
-  },
-  skool: {
-    label: 'Skool Community',
-    color: '#00A693',
-    maxChars: 10000,
-    threadEnabled: false,
-    maxThreadTweets: null,
-    imageAspectRatio: '16:9',
-    imageWidth: 1200,
-    imageHeight: 675,
-    hashtagCount: { min: 0, max: 0 },  // No hashtags on Skool
-    tone: 'community discussion starter, teaching mindset, inviting participation',
-    formatRules: 'Reframe as a discussion prompt or lesson for the community. Start with "I want to share..." or a direct insight. End with a question that invites replies. No hashtags.',
-    avoidPatterns: ['sales language', 'hashtags', 'external links without context'],
-  },
-} as const
-```
-
----
-
-## Brand voice system (lib/brand-voice.ts)
-
-- Store brand voice profile at `config/brand-voice.json`
-- `getBrandVoice(): Promise<BrandVoiceProfile>` — Read and parse the JSON file. Return defaults if file doesn't exist.
-- `saveBrandVoice(profile: BrandVoiceProfile): Promise<void>` — Write to JSON file.
-- `buildBrandVoiceSystemPrompt(profile: BrandVoiceProfile): string` — Construct the system prompt fragment injected into every Claude call. Format:
-
-```
-You are repurposing content for a personal brand with the following voice profile:
-
-TONE: [toneDescriptors joined by ", "]
-WRITING STYLE: [writingStyle]
-TOPIC PILLARS: [topicPillars joined by ", "]
-WORDS AND PHRASES TO NEVER USE: [avoidList joined by ", "]
-
-Here are example posts from this brand that represent the ideal voice:
----
-[examplePosts[0]]
----
-[examplePosts[1]]
----
-[...etc]
----
-
-Always match this voice. Never deviate from the avoid list. Ensure the content feels authored by this specific person, not generic AI.
-```
-
-Default brand voice (used before user configures):
-```json
-{
-  "toneDescriptors": ["clear", "practical"],
-  "writingStyle": "Writes in a direct, no-nonsense way. Gets to the point fast. Uses real examples over theory.",
-  "topicPillars": [],
-  "avoidList": ["synergy", "leverage", "game-changer", "thought leader"],
-  "examplePosts": [],
-  "lastUpdated": ""
-}
-```
-
----
-
-## Hashtag bank (lib/hashtag-bank.ts)
-
-- Store at `config/hashtag-bank.json`
-- `getHashtagBank(): Promise<HashtagBankEntry[]>`
-- `addHashtag(entry: Omit<HashtagBankEntry, 'id' | 'usageCount' | 'lastUsed'>): Promise<HashtagBankEntry>`
-- `removeHashtag(id: string): Promise<void>`
-- `incrementUsage(hashtag: string): Promise<void>` — Called when a hashtag is used in an approved post
-- `getRelevantHashtags(platform: Platform, topicPillar: string | null, limit: number): Promise<HashtagBankEntry[]>` — Filter by platform and optionally by topic pillar, sorted by usage count descending
-
----
-
-## n8n webhook layer (lib/n8n.ts)
-
-This file contains the three async webhook fire functions (content repurpose, image repurpose, publish). All Sheet operations are in `lib/n8n-sheet.ts` (see above). The app never calls Claude, fal.ai, or Google Sheets directly — everything goes through n8n.
-
-### fireContentRepurposeWebhook
-
-```typescript
-async function fireContentRepurposeWebhook(params: {
-  post: LinkedInPost
-  platforms: Platform[]
-  brandVoice: BrandVoiceProfile
-  hashtagBank: HashtagBankEntry[]
-}): Promise<{ success: boolean; error?: string }>
-```
-
-Builds a `ContentRepurposeWebhookPayload` and POSTs to `process.env.N8N_CONTENT_REPURPOSE_WEBHOOK_URL`.
-
-The payload includes:
-- `postId`, `linkedinText`, `platforms`
-- Full `brandVoice` object (n8n uses this to build the Claude system prompt — the app ships the entire brand voice so n8n has everything it needs without a separate config lookup)
-- Flattened `hashtagBank` array (only fields n8n needs: hashtag, platforms, topicPillar)
-- `callbackUrl`: `${process.env.NEXT_PUBLIC_APP_URL}/api/callback/repurpose`
-
-After firing: update all selected platform statuses to `generating_text` in the Sheet immediately via `updateMultiplePlatforms`.
-
-Timeout: 5 seconds (n8n should respond with 200 immediately and process async — if it takes longer than 5s to acknowledge, treat as failure).
-
-### fireImageRepurposeWebhook
-
-```typescript
-async function fireImageRepurposeWebhook(params: {
-  post: LinkedInPost
-  imagePrompts: Partial<Record<Platform, string>>
-}): Promise<{ success: boolean; error?: string }>
-```
-
-Builds an `ImageRepurposeWebhookPayload` and POSTs to `process.env.N8N_IMAGE_REPURPOSE_WEBHOOK_URL`.
-
-The payload includes:
-- `postId`
-- `imagePrompts`: object mapping each platform to its image generation prompt. The app generates these prompts by calling Claude directly (one fast call) before firing the webhook — prompts are derived from the post text and platform context.
-- `imageSizes`: object mapping each platform to `{ width, height }` sourced from `PLATFORM_RULES`
-- `callbackUrl`: `${process.env.NEXT_PUBLIC_APP_URL}/api/callback/images`
-
-After firing: update all platform image statuses to `generating_images` in Sheet.
-
-### firePublishWebhook
-
-```typescript
-async function firePublishWebhook(payload: PublishWebhookPayload): Promise<{ success: boolean; error?: string }>
-```
-
-POSTs to `process.env.N8N_PUBLISH_WEBHOOK_URL`. Timeout: 10 seconds. On success, update Sheet status to `scheduled`. On failure, keep status as `approved` and return error.
-
----
-
-## Image prompt generation (lib/anthropic.ts)
-
-The app still calls Claude directly in two narrow cases: the chat sidebar (interactive edits) and generating image prompts before firing the image webhook.
-
-### generateImagePrompts
-
-```typescript
-async function generateImagePrompts(params: {
-  linkedinText: string
-  brandVoice: BrandVoiceProfile
-  platforms: Platform[]
-}): Promise<Partial<Record<Platform, string>>>
-```
-
-Single Claude call (not per-platform) that returns all image prompts at once. Prompt:
-
-```
-Given this LinkedIn post, generate image generation prompts for each platform listed.
-Each prompt should describe a professional, clean image that visually represents the post's key idea.
-No text overlays in the image. Match the brand tone: [toneDescriptors].
-
-Post: [linkedinText]
-
-Platforms: [platforms]
-
-Respond in JSON only:
-{
-  "twitter": "prompt for Twitter image",
-  "instagram": "prompt for Instagram image",
-  ...
-}
-```
-
-This runs before `fireImageRepurposeWebhook` so n8n receives ready-to-use prompts.
-
-### chatWithAI
-
-```typescript
-async function chatWithAI(params: {
-  messages: ChatMessage[]
-  currentVariantText: string
-  platform: Platform
-  brandVoice: BrandVoiceProfile
-  instruction: string
-}): Promise<{ updatedText: string; explanation: string }>
-```
-
-Called from `/api/chat`. System: brand voice prompt + platform rules. Returns `{ updatedText, explanation }` as JSON. This is the only synchronous Claude call that modifies post content — it runs directly in the app because it needs to be interactive and immediate.
-
-### generateHashtagSuggestions
-
-```typescript
-async function generateHashtagSuggestions(params: {
-  postText: string
-  platform: Platform
-  brandVoice: BrandVoiceProfile
-  existingHashtags: string[]
-  count: number
-}): Promise<string[]>
-```
-
-Called from `/api/hashtags`. Returns suggested hashtags as a JSON array of strings without # prefix.
-
----
-
-## n8n workflow specifications
-
-Document these in the README so you can build the n8n workflows correctly.
-
-### Workflow 1 — Content repurpose
-
-**Trigger**: Webhook node (POST)
-**Expected payload**: `ContentRepurposeWebhookPayload`
-
-Steps:
-1. Webhook receives payload, responds with `200 OK` immediately (before processing — use n8n's "Respond to Webhook" node early to avoid timeout)
-2. For each platform in `payload.platforms`, run a Claude API HTTP Request node in parallel (use n8n's Split In Batches or parallel branches)
-3. Each Claude call uses:
-   - Model: `claude-sonnet-4-20250514`
-   - System prompt: built from `payload.brandVoice` + platform rules (hardcode platform rules in n8n or use a Code node to derive them by platform name)
-   - User prompt: `"Repurpose the following LinkedIn post for [platform]: [payload.linkedinText]"`
-   - Response format: JSON `{ text, hashtags, imagePrompt }` (imagePrompt is not used in this workflow but returned for reference)
-4. After all platforms complete: Google Sheets node — batch update all platform text + hashtag columns for `payload.postId` row
-5. Set all updated platform statuses to `repurposed` in the Sheet
-6. HTTP Request node: POST to `payload.callbackUrl` with body `{ postId: payload.postId, status: "done" }`
-7. On any error: POST to `payload.callbackUrl` with `{ postId, status: "failed", error: "..." }` and update Sheet status to `failed`
-
-### Workflow 2 — Image repurpose
-
-**Trigger**: Webhook node (POST)
-**Expected payload**: `ImageRepurposeWebhookPayload`
-
-Steps:
-1. Webhook responds with `200 OK` immediately
-2. For each platform in `payload.imagePrompts`, run a fal.ai HTTP Request node in parallel
-3. Each fal.ai call:
-   - URL: `https://fal.run/fal-ai/flux/schnell`
-   - Auth: Bearer token from n8n credential
-   - Body: `{ prompt: payload.imagePrompts[platform], image_size: { width, height } }` from `payload.imageSizes[platform]`
-4. After all images complete: Google Sheets node — batch update all platform image URL columns for `payload.postId` row
-5. HTTP Request node: POST to `payload.callbackUrl` with `{ postId, status: "done" }`
-6. On error: POST to callback with `{ postId, status: "failed", error: "..." }`, update Sheet
-
-### Workflow 3 — Publish (Option A router — unchanged)
-
-**Trigger**: Webhook node (POST)
-**Expected payload**: `PublishWebhookPayload`
-
-Steps:
-1. Webhook responds `200 OK` immediately
-2. Switch node on `payload.platform`
-3. Each branch: platform-specific publish API call
-4. Google Sheets node: update `[platform]_status` to `published`, set `[platform]_published_at` to current timestamp
-5. On error: update Sheet `[platform]_status` to `failed`, set `[platform]_error` to error message
-
----
-
-## Callback handling (app side)
-
-### POST /api/callback/repurpose
-
-Called by n8n Workflow 1 when text generation is complete.
-
-```typescript
-// Request body: N8nCallbackPayload
-// 1. Validate the postId exists
-// 2. Call getPostById(postId) from lib/n8n-sheet.ts to re-fetch the post
-//    (n8n has already written results to the Sheet before calling this callback)
-// 3. Signal the UI to refresh (polling will pick it up on next cycle)
-// 4. Return 200 OK
-```
-
-Since Next.js API routes can't push to the browser, use one of these two patterns (implement whichever is simpler):
-
-**Option A — Polling (simpler)**: The UI polls `/api/posts/[id]` every 3 seconds while `generationStatus` is `generating_text` or `generating_images`. The callback endpoint just returns 200 and the UI picks up the changes on the next poll cycle.
-
-**Option B — Server-Sent Events**: Implement an `/api/events/[postId]` SSE endpoint. Callback writes to an in-memory event emitter. UI subscribes to SSE and updates instantly. More complex but better UX.
-
-**Default to Option A (polling)**. Note in a code comment that Option B can replace it for better UX.
-
-### POST /api/callback/images
-
-Same pattern as above, but for image generation completion. Re-fetches the post from Sheets and triggers a UI refresh.
-
----
-
-## API routes
-
-### POST /api/trigger/repurpose
-
-Request body:
-```typescript
-{
-  postId: string
-  platforms: Platform[]    // default: all 5 if omitted
-}
-```
-
-1. Call `getPostById(postId)` from `lib/n8n-sheet.ts` (goes to n8n Sheet webhook)
-2. Load brand voice + hashtag bank from local config files
-3. Call `fireContentRepurposeWebhook`
-4. Return `{ success: boolean; error?: string }`
-
-This route is called both automatically (on post import detection) and manually (user clicks "Repurpose").
-
-**Auto-trigger logic**: On the dashboard page, when posts are loaded and a post has all platform statuses as `pending` AND it was posted within the last 7 days, automatically call this endpoint. Show a subtle "Auto-repurposing..." indicator. The auto-trigger fires only once per post (track in Zustand — if `generationStatus` is anything other than `idle`, skip).
-
-### POST /api/trigger/images
-
-Request body:
-```typescript
-{
-  postId: string
-  platforms: Platform[]
-}
-```
-
-1. Call `getPostById(postId)` from `lib/n8n-sheet.ts`
-2. Load brand voice from local config
-3. Call `generateImagePrompts` (Claude direct — fast single call)
-4. Call `writeImagePrompts(postId, prompts)` from `lib/n8n-sheet.ts` — persists prompts to Sheet via n8n before anything else
-5. Call `fireImageRepurposeWebhook` with the generated prompts
-6. Return `{ success: boolean; error?: string }`
-
-Image generation is always triggered manually — the user clicks "Generate images" after reviewing the text variants. It is never auto-triggered.
-
-### POST /api/hashtags
-
-Request body:
-```typescript
-{
-  postText: string
-  platform: Platform
-  existingHashtags: string[]
-}
-```
-
-Calls `generateHashtagSuggestions` directly (Claude) and returns `{ suggestions: string[] }`.
-
-### POST /api/chat
-
-Request body:
-```typescript
-{
-  messages: ChatMessage[]
-  currentVariantText: string
-  platform: Platform
-  instruction: string
-}
-```
-
-Calls `chatWithAI` directly (Claude) and returns `{ updatedText: string; explanation: string }`.
-
-### POST /api/publish
-
-Request body:
-```typescript
-{
-  postId: string
-  platform: Platform
-  scheduledAt: string | null
-}
-```
-
-1. Call `getPostById(postId)` from `lib/n8n-sheet.ts` to fetch current variant
-2. Validate: text not empty, status is `approved`
-3. Build `PublishWebhookPayload`
-4. Call `firePublishWebhook`
-5. Call `updateStatus(postId, platform, 'scheduled')` or `updateStatus(postId, platform, 'failed', { error })` via `lib/n8n-sheet.ts`
-6. Return `{ success: boolean; error?: string }`
-
-### GET /api/posts
-
-Calls `getAllPosts(filters)` from `lib/n8n-sheet.ts` which fires a `GET_ALL_POSTS` action to the n8n Sheet webhook. Supports query params:
-- `?status=pending` — filter by any platform having this status
-- `?platform=twitter` — filter posts that have content for this platform
-- `?from=YYYY-MM-DD&to=YYYY-MM-DD` — filter by `postedAt` range
-
-Filters are passed in the Sheet webhook payload so n8n applies them server-side before returning data.
-
-### PATCH /api/posts/[id]
-
-Request body: `Partial<LinkedInPost>` — update specific platform variants (used when user manually edits text in the UI, or when rescheduling from the calendar).
-
-Calls `updateMultiplePlatforms` or `updatePlatformVariant` from `lib/n8n-sheet.ts` depending on how many platforms are being updated.
-
-### GET/POST /api/brand-voice
-
-GET returns current `BrandVoiceProfile`. POST saves and returns updated profile.
-
----
-
-## UI — Dashboard page
-
-**Route**: `/dashboard`
-
-**Layout**: Full-width table with sticky header. Top bar has filter controls.
-
-**Search bar** (above filter controls):
-- Full-text search across the original LinkedIn post text AND all repurposed platform text fields
-- Case-insensitive substring match, client-side
-- Empty state message shows the search query when no posts match
-
-**Filter controls** (horizontal row below search bar):
-- Platform filter: pill toggles for All / Twitter / Threads / Instagram / Facebook / Skool
-- Status filter: All / Pending / Approved / Scheduled / Published
-- Date range picker
-- Clear button resets all filters AND the search query
-
-**Table columns** (all sortable except Actions):
-- Date (posted_at, formatted as "Mar 12") — **default sort: latest first (descending)**
-- LinkedIn post (first 80 chars, expandable on click)
-- Twitter status badge
-- Threads status badge
-- Instagram status badge
-- Facebook status badge
-- Skool status badge
-- Actions: "Repurpose" button, "View" button (not sortable)
-
-**Column sorting**:
-- Click any column header (except Actions) to sort by that column
-- Click the same header again to toggle direction (↑ ascending / ↓ descending)
-- Click a different header to sort by that column (resets to descending)
-- Sort indicators: active column shows ↑ or ↓; inactive columns show ↕
-- Date → sorts by `postedAt` ISO string
-- LinkedIn Post → sorts alphabetically by `linkedinText`
-- Platform columns → sorts by status priority: published > approved > scheduled > pending > failed
-
-**Status badge colors**:
-- `pending` → gray
-- `approved` → blue
-- `scheduled` → amber
-- `published` → green
-- `failed` → red
-
-**Clicking a row** opens a slide-over panel showing:
-- Full LinkedIn post text
-- Per-platform: generated text, image preview, hashtags, status, scheduled time
-- Quick approve/reject buttons per platform
-- "Edit in Repurpose" button that navigates to `/repurpose?postId=[id]`
-
-**Stats bar** at top of dashboard:
-- Total posts
-- Total repurposed (at least one platform has non-pending status)
-- Published this week
-- Pending approval
-
----
-
-## UI — Repurpose page
-
-**Route**: `/repurpose?postId=[id]`
-
-**Layout**: Three-column layout.
-
-**Column 1 — Source post** (left, ~25% width):
-- LinkedIn post text (read-only, scrollable)
-- Original image if available
-- Post date
-- "Repurpose text" button → fires `POST /api/trigger/repurpose`
-- "Generate images" button → fires `POST /api/trigger/images` (enabled only after text variants exist)
-- Platform checklist (select which platforms to include)
-- Generation status indicators: "Text: generating..." / "Images: generating..." / "Done ✓"
-
-**Column 2 — Platform cards** (center, ~50% width):
-- One card per selected platform, stacked vertically
-- **While text is generating** (n8n workflow running): show skeleton card with animated pulse and label "Waiting for n8n..." — the app is polling the Sheet in the background every 3 seconds
-- **After text arrives** (polling detects non-null text in Sheet): skeleton is replaced with the real card
-- Each card contains:
-  - Platform icon + label
-  - Editable textarea with character count (shows red if over limit)
-  - Character count indicator (e.g. "247 / 280") — turns red when over limit
-  - Image section: skeleton while generating → image preview when done → "Regenerate image" button
-  - Hashtags section: chips showing selected hashtags + "Suggest more" button
-  - Suggested hashtags appear as faded chips you can click to add
-  - Approve toggle (green checkmark when approved)
-  - Status badge
-  - "Schedule" datetime picker (appears after approving)
-  - "Publish now" button (appears after approving)
-- When text is edited by user, mark card with a subtle "edited" indicator
-
-**Generation status panel** (`GenerationStatusPanel` component) — shown between Column 1 and Column 2 while any generation is in progress:
-- Shows two status rows: "Text generation" and "Image generation"
-- Each row: icon (spinner/check/error) + label + elapsed time
-- Text: "n8n is generating platform variants via Claude..."
-- Images: "n8n is generating images via fal.ai..."
-- Disappears once both are done
-
-**Column 3 — AI chat sidebar** (right, ~25% width):
-- Chat interface showing message history
-- Input box at bottom: "Edit the Twitter version to be more provocative"
-- Chat calls `/api/chat` directly (synchronous Claude call — not via n8n)
-- Chat is context-aware: references the currently focused platform card
-- Clicking any platform card focuses it — chat context switches to that platform
-- Quick action chips above input: "Make shorter", "Add a hook", "More casual", "Add emoji"
-- After AI responds and updates the text, show diff highlighting (old text struck through, new text highlighted)
-- Note: chat sidebar is only enabled after text variants have arrived (disabled with message "Waiting for text generation to complete..." while n8n is running)
-
-**Top bar actions**:
-- "Approve all" — marks all generated platforms as approved
-- "Publish all approved" — fires publish webhooks for all approved platforms
-- Loading states show which specific workflow is running
-
-**Generation flow (auto + manual)**:
-1. User lands on page with a `postId`
-2. App checks Sheet for existing variants
-3. **If all platforms are `pending`** and post is within 7 days: auto-trigger `POST /api/trigger/repurpose`. Show status panel immediately.
-4. **If variants exist** (any non-pending status): show existing variants. "Repurpose text" button becomes "Re-generate text".
-5. While n8n runs: app polls `/api/posts/[id]` every 3 seconds. When Sheet has new data, update UI.
-6. After text variants appear: "Generate images" button becomes active. User clicks it → fires `POST /api/trigger/images`. Image skeletons appear. Same polling pattern.
-7. User reviews, edits via chat if needed, approves, publishes.
-
----
-
-## UI — Calendar page
-
-**Route**: `/calendar`
-
-**Component**: FullCalendar with `dayGridMonth` and `timeGridWeek` views. Toggle between views.
-
-**Events**:
-- Each scheduled/published post variant = one event
-- Event color = platform color (from `PLATFORM_RULES[platform].color`)
-- Event title = `[PlatformIcon] [first 40 chars of text]`
-- Multiple events on same day stack vertically
-
-**Click an event** → popover showing:
-- Platform + post date
-- Full text preview
-- Current status
-- Image thumbnail
-- "Edit" button → navigates to repurpose page
-- "Reschedule" datetime picker → updates Sheet + n8n queue via PATCH
-- "Cancel scheduled" button → updates Sheet status back to `approved`
-
-**Gap warning banner**:
-- Below the calendar, show a list of `GapWarning` objects
-- Gap detection: for each platform, if the last scheduled/published post was more than 3 days ago AND there's no upcoming post in the next 3 days, show a warning
-- Topic pillar gap: scan post texts for topic pillar keywords. If a pillar hasn't appeared in posts in the last 10 days, flag it.
-- Warning card: "No Twitter posts in 5 days — [Repurpose a post]"
-
----
-
-## UI — Settings page (Brand voice profile)
-
-**Route**: `/settings`
-
-**Layout**: Tabbed interface: "Brand Voice" tab and "Hashtag Bank" tab.
-
-### Brand Voice tab
-
-Form with these sections:
-
-**Tone descriptors**
-- Tag input — type a word and press Enter to add
-- Pre-suggestions as pills: "direct", "practical", "conversational", "educational", "inspiring", "no-fluff", "analytical", "storytelling"
-- Max 8 descriptors
-
-**Writing style**
-- Textarea: "Describe your writing style in your own words..."
-- Placeholder: "e.g. Gets to the point fast. Uses real examples over theory. Short sentences. First-person always."
-- Max 500 chars
-
-**Topic pillars**
-- Tag input — type and press Enter
-- These feed into hashtag intelligence and gap detection
-- Max 6 pillars
-
-**Words / phrases to avoid**
-- Tag input
-- Pre-suggestions: "synergy", "game-changer", "leverage", "thought leader", "circle back", "touch base"
-- Unlimited
-
-**Example posts**
-- Up to 5 text areas
-- Label: "Paste a LinkedIn post that sounds exactly like you"
-- Add/remove buttons
-- Character count per post
-
-**Save button**:
-- On save: update `config/brand-voice.json`
-- Show toast: "Brand voice saved — all future repurposing will use this profile"
-- Show warning if no example posts have been added: "Adding example posts significantly improves repurposing quality"
-
-### Hashtag Bank tab
-
-**Add hashtag form**:
-- Hashtag input (without #)
-- Platform checkboxes (which platforms to use this on)
-- Topic pillar dropdown (from configured pillars)
-- Add button
-
-**Hashtag table**:
-- Columns: Hashtag | Platforms | Topic pillar | Usage count | Last used | Delete
-- Sortable by usage count
-- Filter by platform
-- Bulk import: paste comma-separated hashtags
-
----
-
-## UI — Design system
-
-**Color palette**:
-```css
---bg-primary: #0A0A0A
---bg-secondary: #111111
---bg-card: #161616
---bg-hover: #1C1C1C
---border: #2A2A2A
---text-primary: #F5F5F5
---text-secondary: #888888
---text-muted: #555555
---accent: #7C3AED          /* Purple — primary actions */
---accent-hover: #6D28D9
---success: #10B981
---warning: #F59E0B
---error: #EF4444
---info: #3B82F6
-```
-
-**Dark-first design** — The entire app uses a dark theme. No light mode toggle needed.
-
-**Typography**:
-- Font: `Geist` (from `next/font/google`) for UI
-- Mono: `Geist Mono` for post text previews and code
-
-**Component conventions**:
-- Cards: `bg-card` background, `border` border, `rounded-xl`, `p-4`
-- Buttons: Primary = purple fill; Ghost = transparent with border; Destructive = red
-- Status badges: Small pill with colored dot + label
-- Platform icons: Custom SVG components per platform (Twitter bird, Instagram gradient, etc.)
-- All loading states use skeleton placeholders, not spinners (except for in-progress AI calls which use an animated typing indicator)
-
----
-
-## Error handling
-
-Handle these scenarios gracefully throughout:
-
-1. **Sheet webhook failure** — If the n8n Sheet webhook (`N8N_SHEET_WEBHOOK_URL`) returns an error or times out, show banner "Data sync unavailable — n8n Sheet workflow not responding" and let the app continue with cached Zustand state. Retry the failed call after 30 seconds. Never crash or show a blank screen — cached data is better than nothing.
-2. **n8n content repurpose webhook failure** — Show toast: "Text generation could not be triggered — [Retry]". Keep platform statuses as `pending`. Retry button re-fires `POST /api/trigger/repurpose`.
-3. **n8n image repurpose webhook failure** — Show toast: "Image generation could not be triggered — [Retry]". Retry button re-fires `POST /api/trigger/images`. Never block text repurposing.
-4. **n8n callback reports failure** — When `/api/callback/repurpose` or `/api/callback/images` receives `status: "failed"`, update the UI status panel to show "Generation failed: [error]" with a Retry button. Update Sheet status to `failed`.
-5. **n8n publish webhook failure** — Show toast error. Keep status as `approved` in Sheet. Show "Retry publish" button.
-6. **Polling timeout** — If polling runs for more than 5 minutes without the Sheet updating, stop polling and show warning: "Generation is taking longer than expected — check your n8n workflow." with a manual "Refresh" button.
-7. **Character limit exceeded** — Warn visually in the platform card but still allow approval. User may want to manually trim.
-8. **Empty brand voice** — Show a persistent banner on the repurpose page: "Your brand voice profile is empty — [Set it up] for better results." This also means n8n will receive empty brand voice fields — acceptable, it will just generate without brand constraints.
-9. **Sheet row not found** — Show error and offer to refresh posts from Sheet.
-10. **Claude API failure (chat / hashtags)** — These are direct Claude calls from the app. Show inline error in the chat sidebar or hashtag panel with a Retry option.
-
----
-
-## Key behaviors and edge cases
-
-1. **Regenerate single platform** — Each platform card has a "Re-generate" button. This fires `POST /api/trigger/repurpose` with `platforms: [thisPlatform]` only. Only that card goes into skeleton/polling mode — others are unaffected.
-
-2. **Regenerate single image** — Each platform card has a "Re-generate image" button. This fires `POST /api/trigger/images` with `platforms: [thisPlatform]` and the existing image prompt (or re-generates the prompt first). Only that card's image goes into skeleton mode.
-
-3. **Partial approval** — User can approve only 2 of 5 platforms and publish just those. Unapproved platforms stay as drafts.
-
-4. **Manual edit detection** — If user edits text directly in a platform card textarea, set `isEdited: true` on that variant. Show a subtle indicator. If user then clicks "Re-generate", show confirmation: "This will overwrite your manual edits. Continue?"
-
-5. **Twitter thread detection** — If generated Twitter text exceeds 280 chars, automatically split into a numbered thread (1/, 2/, etc.) and show each tweet as a separate block within the Twitter card.
-
-6. **Skool has no hashtags** — When platform is Skool, hide the hashtag section entirely. The brand voice payload sent to n8n should include a note in the platform context that Skool does not use hashtags.
-
-7. **Schedule time validation** — Scheduled time must be at least 15 minutes in the future. Show validation error if not.
-
-8. **Duplicate prevention** — Before firing the publish webhook, check if current Sheet status is already `scheduled` or `published`. If so, show confirmation: "This post is already scheduled for [platform]. Publish again?"
-
-9. **Image URL storage** — Images generated by fal.ai (via n8n) are stored as URLs in the Sheet. Add a comment in the code noting these URLs may expire; a future improvement is to have n8n upload them to permanent storage (Cloudflare R2, Google Drive, etc.) before writing to the Sheet.
-
-10. **First-run experience** — If `config/brand-voice.json` doesn't exist OR `examplePosts` is empty, redirect to `/settings` on first visit with a welcome modal: "Before repurposing, let's set up your brand voice. This profile gets sent to n8n and is used by Claude to match your voice."
-
-11. **Auto-trigger safeguard** — Auto-trigger only fires if: (a) all platforms are `pending`, (b) post is within last 7 days, (c) `generationStatus` in Zustand store is `idle` for this post. This prevents double-triggering if the user navigates away and back.
-
-12. **n8n webhook URL validation on startup** — On app start, check that all four `N8N_*_WEBHOOK_URL` env vars are set (`N8N_SHEET_WEBHOOK_URL`, `N8N_CONTENT_REPURPOSE_WEBHOOK_URL`, `N8N_IMAGE_REPURPOSE_WEBHOOK_URL`, `N8N_PUBLISH_WEBHOOK_URL`). If any are missing, show a persistent banner specifying which URL is missing and what feature it blocks. A missing `N8N_SHEET_WEBHOOK_URL` disables the entire app since no data can load.
-
-13. **Keyboard shortcuts**:
-    - `Cmd+Enter` → Approve focused platform card
-    - `Cmd+R` → Re-generate focused platform card (shows confirmation if edited)
-    - `Cmd+S` → Save settings form
-    - `Escape` → Close slide-over / popover
-
----
-
-## README.md content
-
-Generate a README with:
-1. Project overview and architecture summary (app = thin UI + orchestrator, n8n = AI + publishing engine)
-2. Prerequisites (Node 18+, n8n instance running, API keys needed)
-3. Setup steps (clone, install, configure .env, run dev)
-4. How to set up Google Sheets — create the spreadsheet, set column headers, share with n8n service account (credentials live only in n8n, not in the app)
-5. How to configure n8n — four workflows to create: Sheet operations (Workflow 0), content repurpose (Workflow 1), image repurpose (Workflow 2), publish (Workflow 3). For each: webhook URL to copy into .env.local, expected payload structure, what it writes to the Sheet, callback URL format.
-6. n8n workflow specs summary (one paragraph per workflow: input payload fields, Sheet columns written, callback format, error handling)
-7. First-run guide (set brand voice first, verify n8n workflows are live via test endpoint, then import posts)
-8. Platform API setup notes (which platforms need what credentials in n8n — Twitter API v2, Facebook/Instagram Graph API, Threads API, Skool)
-9. Content store overview — what the content/ folder is, how files are named, how to read them, and why git tracking is recommended
-9b. Auto-documentation system — how CHANGELOG.md works, what triggers doc sync, how to check doc freshness via the dashboard, and the mandatory Claude Code instruction
-10. AOS overview — what SOUL.md, Heartbeat.md, memory files, and skills files are, where they live, and how the learning system works
-10. How to set up the cron schedule — CRON_SECRET, CRON_SCHEDULE env var, and how to point an external scheduler (Vercel Cron, system crontab, or n8n Schedule node) to POST /api/cron
-
----
-
-
----
-
-
----
-
----
-
----
-
-## Platform skills — prompt factories for content and image repurposing
-
-Each platform has two dedicated skill files: one for content repurposing and one for image repurposing. These skills are **prompt factories** — they read source material, learnings, and platform rules, then produce a structured prompt payload. They do not call Claude or fal.ai directly. n8n receives the payload and executes the actual API calls.
-
-This separation means:
-- Skills are human-readable Markdown — you can read, edit, and understand exactly what prompt any platform will receive
-- n8n handles all external API complexity and retries
-- Prompts are consistent, versioned, and improvable independently of the execution layer
-- The same skill file is read both when generating prompts AND when the docs system documents what each platform does
-
----
-
-### Skills directory structure
-
-```
-skills/
-├── repurpose.md                          # Master repurpose runbook (orchestrates all platform skills)
-├── cron.md                               # Cron skill
-└── platforms/
-    ├── twitter-content.md                # Twitter/X content prompt factory
-    ├── twitter-image.md                  # Twitter/X image prompt factory
-    ├── threads-content.md                # Threads content prompt factory
-    ├── threads-image.md                  # Threads image prompt factory
-    ├── instagram-content.md              # Instagram content prompt factory
-    ├── instagram-image.md                # Instagram image prompt factory
-    ├── facebook-content.md               # Facebook content prompt factory
-    ├── facebook-image.md                 # Facebook image prompt factory
-    ├── skool-content.md                  # Skool content prompt factory
-    └── skool-image.md                    # Skool image prompt factory
-```
-
----
-
-### Content skill — output contract
-
-Every content skill file, when executed by `/api/skills/platform-prompt`, produces this structured object:
-
-```typescript
-interface ContentPromptOutput {
-  platform: Platform
-  postId: string
-  systemPrompt: string        // Full system prompt — brand voice + platform rules + learnings injected
-  userPrompt: string          // The actual instruction with source post text
-  context: {
-    platformLabel: string     // e.g. "Twitter / X"
-    maxChars: number          // Character limit for this platform
-    hashtagCount: string      // e.g. "1-3 hashtags"
-    threadEnabled: boolean    // Whether thread format is available
-    learningsApplied: string[] // Which learnings.md entries were injected (for audit trail)
-  }
-}
-```
-
-n8n receives this object and passes `systemPrompt` + `userPrompt` directly to the Claude API messages format. The `context` fields are used by n8n to validate the output (e.g. check character count before writing to Sheet).
-
----
-
-### Image skill — output contract
-
-Every image skill file, when executed, produces this structured object:
-
-```typescript
-interface ImagePromptOutput {
-  platform: Platform
-  postId: string
-  sourceImageUrl: string | null   // Original LinkedIn image URL passed in
-  prompt: string                  // The fal.ai generation prompt
-  styleDirectives: {
-    aspectRatio: string           // e.g. "1:1", "16:9"
-    width: number                 // Pixel width
-    height: number                // Pixel height
-    mood: string                  // e.g. "clean, professional, minimal"
-    colorTone: string             // e.g. "warm neutrals, no harsh contrasts"
-    composition: string           // e.g. "centered subject, generous whitespace"
-    textOverlay: false            // Always false — never text in generated images
-  }
-  negativePrompt: string          // What to avoid — passed to fal.ai as negative_prompt
-}
-```
-
-n8n uses all fields: `prompt` + `styleDirectives` dimensions for the fal.ai API call, `negativePrompt` for quality control, `sourceImageUrl` if the model supports image-to-image conditioning.
-
----
-
-### Content skill format — annotated example (twitter-content.md)
-
-All 5 content skill files follow this exact structure. Only the platform-specific sections differ.
-
-```markdown
-# Skill: Twitter/X Content Prompt Factory
-
-## Purpose
-Generate the structured prompt payload for repurposing a LinkedIn post as Twitter/X content.
-This skill produces a system prompt + user prompt. It does not call Claude directly.
-The output is passed to n8n which makes the Claude API call.
-
-## Inputs required
-- `linkedinText`: string — the source LinkedIn post text
-- `postId`: string — for audit trail
-- `brandVoice`: BrandVoiceProfile — from config/brand-voice.json
-- `learnings`: string — relevant sections from memory/learnings.md (Twitter section + content performance)
-- `userProfile`: string — voice fingerprint + approval patterns from memory/USER.md
-
-## Platform identity
-- Platform: Twitter / X
-- Character limit: 280 per tweet (thread supported up to 10 tweets)
-- Hashtag count: 1–3
-- Thread format: YES — use when content naturally has multiple distinct points
-- Image: 1200×675 (16:9) or 1080×1080 (1:1)
-
-## System prompt template
-
-```
-You are a content repurposing specialist for a personal brand on Twitter/X.
-
-BRAND VOICE:
-Tone: {brandVoice.toneDescriptors}
-Writing style: {brandVoice.writingStyle}
-Topic pillars: {brandVoice.topicPillars}
-Never use: {brandVoice.avoidList}
-
-EXAMPLE POSTS (study these — they represent the ideal voice):
-{brandVoice.examplePosts — each separated by ---}
-
-PLATFORM RULES FOR TWITTER/X:
-- Maximum 280 characters per tweet
-- If content has multiple distinct points, format as a numbered thread (1/, 2/, 3/)
-- Start with a bold hook — the first tweet must stop the scroll
-- Short punchy sentences — rarely over 15 words
-- Each tweet must be self-contained and make sense without the others
-- End the thread with a single punchy conclusion or call to reflect
-- Use 1–3 hashtags maximum, placed at the end of the last tweet
-- No corporate language. No "Let me know your thoughts". No "Comment below".
-
-OBSERVED APPROVAL PATTERNS — CRITICAL, THESE OVERRIDE THE RULES ABOVE:
-{learnings — Twitter section, full text}
-
-USER VOICE FINGERPRINT:
-{userProfile.voiceFingerprint}
-
-USER TWITTER APPROVAL PATTERNS:
-{userProfile.approvalPatterns.twitter}
-
-Your goal: generate Twitter content that will be approved without any edits.
-Study the approval patterns above — they are real observations of what this creator
-approves and what they change. Optimize for zero-edit approval above all else.
-
-Output format: JSON only, no markdown, no explanation.
-{
-  "text": "full tweet text or full thread with tweets separated by \n\n",
-  "hashtags": ["tag1", "tag2"],
-  "format": "single" | "thread",
-  "tweetCount": 1
-}
-```
-
-## User prompt template
-
-```
-Repurpose the following LinkedIn post for Twitter/X.
-
-Source post:
-{linkedinText}
-
-If the content has 3 or more distinct points or lessons, format as a thread.
-If it is a single focused insight, keep as a single tweet (can be up to 280 chars).
-```
-
-## Learnings injection rules
-When building the system prompt, inject learnings in this priority order:
-1. Twitter-specific approval patterns (from learnings.md ## Approval patterns ### Twitter)
-2. Content performance observations (from learnings.md ## Content performance)
-3. Platform-specific tone adjustments for Twitter (from learnings.md ## Platform-specific tone adjustments ### Twitter)
-
-If the learnings section for Twitter is empty (early use, no data yet), omit the
-"OBSERVED APPROVAL PATTERNS" section entirely rather than showing an empty block.
-
-## Output validation rules
-Before returning the output, validate:
-- If format is "single": text must be ≤280 chars (including hashtags)
-- If format is "thread": each tweet separated by \n\n must individually be ≤280 chars
-- hashtags array must have 1–3 items
-- No item in avoidList appears in the text
-If validation fails: flag in the context.learningsApplied array as "VALIDATION_WARNING: {issue}"
-```
-
----
-
-### Image skill format — annotated example (twitter-image.md)
-
-```markdown
-# Skill: Twitter/X Image Prompt Factory
-
-## Purpose
-Generate the structured image prompt payload for repurposing a LinkedIn post image for Twitter/X.
-This skill produces a fal.ai prompt + style directives + negative prompt.
-n8n receives this payload and calls fal.ai directly.
-
-## Inputs required
-- `linkedinText`: string — source post text (used to understand visual subject matter)
-- `sourceImageUrl`: string | null — original LinkedIn image URL
-- `postId`: string
-- `brandVoice`: BrandVoiceProfile — for visual tone alignment
-- `learnings`: string — visual/image learnings from memory/learnings.md if any
-
-## Platform image identity
-- Platform: Twitter / X
-- Dimensions: 1200 × 675 (16:9 landscape)
-- Aspect ratio: 16:9
-- Optimal visual style: clean, bold, designed to stop scroll in a fast-moving feed
-- Text overlay: NEVER — no text, words, or captions in the image
-
-## Prompt construction rules
-The image prompt must:
-1. Capture the core visual concept of the LinkedIn post in one scene
-2. Be optimized for 16:9 landscape — horizontal compositions, nothing portrait-oriented
-3. Feel professional but not corporate — real, not stock-photo
-4. Have strong visual contrast for small-screen legibility
-5. Align with brand tone descriptors (e.g. if tone is "direct, no-fluff" — image should be minimal, not cluttered)
-
-## Prompt template
-
-```
-A [visual concept derived from post topic] — [composition style] — [mood/atmosphere].
-[Lighting description]. [Color palette]. Professional quality, photorealistic/illustrated (choose based on post topic).
-No text, no words, no captions, no overlays. 16:9 landscape composition. [Any brand-specific visual notes from brandVoice].
-```
-
-## Style directives (always fixed for this platform)
-```json
-{
-  "aspectRatio": "16:9",
-  "width": 1200,
-  "height": 675,
-  "mood": "bold, clean, high contrast, scroll-stopping",
-  "colorTone": "strong contrast, vivid but not garish, aligned with post emotional tone",
-  "composition": "landscape-first, strong focal point, generous negative space",
-  "textOverlay": false
-}
-```
-
-## Negative prompt template
-```
-text, words, letters, captions, watermarks, logos, blurry, low quality, distorted,
-portrait orientation, stock photo clichés (handshake, lightbulb, magnifying glass),
-oversaturated, pixelated, ugly, deformed
-```
-
-## Example output
-Given a LinkedIn post about "the biggest mistake founders make with retention":
-
-```json
-{
-  "platform": "twitter",
-  "postId": "post_001",
-  "sourceImageUrl": "https://...",
-  "prompt": "A leaking bucket with water pouring out — clean minimal studio shot — metaphor for customer churn. Soft dramatic lighting from above. Muted blue-grey palette with one warm amber accent. Professional quality, photorealistic. No text, no words, no overlays. 16:9 landscape.",
-  "styleDirectives": {
-    "aspectRatio": "16:9",
-    "width": 1200,
-    "height": 675,
-    "mood": "bold, clean, high contrast, scroll-stopping",
-    "colorTone": "muted blue-grey with warm amber accent",
-    "composition": "centered subject, generous negative space on sides",
-    "textOverlay": false
-  },
-  "negativePrompt": "text, words, letters, captions, watermarks, logos, blurry, low quality, distorted, portrait orientation, handshake, lightbulb, magnifying glass, oversaturated, pixelated"
-}
-```
-```
-
----
-
-### Platform skill variations — what differs per platform
-
-All 10 skill files share the same structure. Here is what specifically changes per platform:
-
-#### Content skills — platform-specific deltas
-
-| Platform | Key system prompt differences |
-|---|---|
-| **Twitter** | Thread format enabled. 280-char limit enforced. Hook-first. Numbered threads. |
-| **Threads** | 500-char limit. No thread format. Conversational register. Soft question ending ok. |
-| **Instagram** | 2200-char limit. Story arc structure. First line must work as preview. Hashtags at end separated by line break. |
-| **Facebook** | Long form ok. End with a direct question. Paragraph prose, no bullets. Warm community tone. |
-| **Skool** | Reframe as community discussion starter. "I want to share a lesson..." opening. End with discussion question. NO hashtags — omit hashtag output field entirely. |
-
-#### Image skills — platform-specific deltas
-
-| Platform | Dimensions | Aspect | Style directive | Key composition rule |
-|---|---|---|---|---|
-| **Twitter** | 1200×675 | 16:9 | Bold, high contrast | Landscape-first, strong focal point |
-| **Threads** | 1080×1080 | 1:1 | Warm, casual, personal feel | Square-centered, intimate framing |
-| **Instagram** | 1080×1080 | 1:1 | Polished, aesthetic, thumb-stopping | Grid-aware, color palette consistency |
-| **Facebook** | 1200×630 | 16:9 | Warm, community-oriented | Inviting scene, human element preferred |
-| **Skool** | 1200×675 | 16:9 | Educational, clear, trustworthy | Clean diagram style or simple scene |
-
----
-
-### API route — POST /api/skills/platform-prompt
-
-This route executes a platform skill file and returns the structured prompt payload. Called by the repurpose skill before firing the n8n webhook.
-
-**Request body:**
-```typescript
-{
-  postId: string
-  platform: Platform
-  skillType: 'content' | 'image'
-  sourceImageUrl?: string          // Required for image skills
-}
-```
-
-**Implementation:**
-```typescript
-// app/api/skills/platform-prompt/route.ts
-
-export async function POST(req: Request) {
-  const { postId, platform, skillType, sourceImageUrl } = await req.json()
-
-  // 1. Fetch source post via n8n Sheet webhook
-  const post = await getPostById(postId)
-  if (!post) return Response.json({ error: 'Post not found' }, { status: 404 })
-
-  // 2. Load all context needed by the skill
-  const brandVoice = await getBrandVoice()
-  const learnings = await fs.readFile('memory/learnings.md', 'utf-8').catch(() => '')
-  const userProfile = await fs.readFile('memory/USER.md', 'utf-8').catch(() => '')
-
-  // 3. Read the skill file
-  const skillPath = `skills/platforms/${platform}-${skillType}.md`
-  const skillContent = await fs.readFile(skillPath, 'utf-8')
-
-  // 4. Extract relevant learnings for this platform
-  const relevantLearnings = extractPlatformLearnings(learnings, platform)
-
-  // 5. Call Claude to execute the skill — Claude reads the skill file and
-  //    produces the structured output according to the skill's output contract
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 2048,
-    system: `You are executing a skill file for the Pulse Repurpose app.
-Read the skill file carefully and produce the exact output format it specifies.
-Return JSON only. No markdown. No explanation.`,
-    messages: [{
-      role: 'user',
-      content: `Execute this skill:
-
-${skillContent}
-
-With these inputs:
-- postId: ${postId}
-- linkedinText: ${post.linkedinText}
-- sourceImageUrl: ${sourceImageUrl ?? 'null'}
-- brandVoice: ${JSON.stringify(brandVoice)}
-- learnings (platform-relevant): ${relevantLearnings}
-- userProfile: ${userProfile}
-
-Return the structured output object as specified in the skill file.`
-    }]
-  })
-
-  const output = JSON.parse(
-    response.content[0].type === 'text' ? response.content[0].text : '{}'
-  )
-
-  // 6. Persist generated prompts — both to content .md file and to Google Sheet
-  if (skillType === 'content') {
-    // Write full prompt to Sheet as JSON string (for audit + n8n to use)
-    const promptJson = JSON.stringify({
-      systemPrompt: output.systemPrompt,
-      userPrompt: output.userPrompt,
-    })
-    await writeContentPrompts(postId, { [platform]: promptJson })
-    // Write truncated version to content .md file frontmatter for human readability
-    await updatePlatformFileMeta(postId, platform, {
-      content_prompt_preview: output.userPrompt?.slice(0, 200) + '...',
-    })
-  }
-  if (skillType === 'image') {
-    await updatePlatformFileMeta(postId, platform, {
-      image_prompt: output.prompt,
-    })
-    // Also write image prompt to Sheet via n8n
-    await writeImagePrompts(postId, { [platform]: output.prompt })
-  }
-
-  return Response.json(output)
-}
-```
-
----
-
-### Updated repurpose flow — how skills slot in
-
-The master `skills/repurpose.md` and `POST /api/skills/repurpose` route are updated to call platform skills before firing n8n webhooks.
-
-**Updated Step 3 in skills/repurpose.md:**
-
-```markdown
-### Step 3 — Generate prompt payloads via platform skills
-
-For each target platform, call POST /api/skills/platform-prompt with skillType: "content".
-This executes the platform's content skill file and returns { systemPrompt, userPrompt, context }.
-
-Run all 5 platform content skill calls in parallel.
-
-Collect all outputs into a prompts map:
-{
-  twitter:   { systemPrompt: "...", userPrompt: "..." },
-  threads:   { systemPrompt: "...", userPrompt: "..." },
-  instagram: { systemPrompt: "...", userPrompt: "..." },
-  facebook:  { systemPrompt: "...", userPrompt: "..." },
-  skool:     { systemPrompt: "...", userPrompt: "..." },
-}
-
-### Step 4 — Fire content repurpose webhook with prompt payloads
-
-POST to N8N_CONTENT_REPURPOSE_WEBHOOK_URL.
-
-Updated payload — the contentPrompts field replaces the old brandVoice field:
-{
-  postId,
-  contentPrompts: {  // pre-built per-platform prompt pairs from skills
-    twitter:   { systemPrompt, userPrompt },
-    threads:   { systemPrompt, userPrompt },
-    instagram: { systemPrompt, userPrompt },
-    facebook:  { systemPrompt, userPrompt },
-    skool:     { systemPrompt, userPrompt },
-  },
-  callbackUrl
-}
-
-n8n no longer builds prompts itself. It receives ready-to-use system + user prompt pairs
-and passes them directly to the Claude API for each platform.
-```
-
-**Updated Step 5 for images in skills/repurpose.md:**
-
-```markdown
-### Step 5 — Generate image prompt payloads via platform skills
-
-For each target platform, call POST /api/skills/platform-prompt with:
-- skillType: "image"
-- sourceImageUrl: post.linkedinImageUrl
-
-Run all 5 platform image skill calls in parallel.
-
-Collect outputs into an imagePayloads map:
-{
-  twitter:   { prompt, sourceImageUrl, styleDirectives, negativePrompt },
-  threads:   { prompt, sourceImageUrl, styleDirectives, negativePrompt },
-  instagram: { prompt, sourceImageUrl, styleDirectives, negativePrompt },
-  facebook:  { prompt, sourceImageUrl, styleDirectives, negativePrompt },
-  skool:     { prompt, sourceImageUrl, styleDirectives, negativePrompt },
-}
-
-### Step 6 — Fire image repurpose webhook with full image payloads
-
-POST to N8N_IMAGE_REPURPOSE_WEBHOOK_URL.
-
-Updated payload:
-{
-  postId,
-  imagePayloads: {  // pre-built per-platform image prompt objects from skills
-    twitter:   { prompt, sourceImageUrl, styleDirectives, negativePrompt },
-    // ...etc
-  },
-  callbackUrl
-}
-
-n8n receives complete, ready-to-use image payloads per platform.
-It passes prompt + styleDirectives dimensions to fal.ai, negativePrompt for quality,
-and sourceImageUrl if the model supports image-to-image conditioning.
-```
-
----
-
-### Updated n8n workflow specs — simplified
-
-Because skills now pre-build all prompts, n8n workflows 1 and 2 become significantly simpler.
-
-**Workflow 1 (Content repurpose) — updated:**
-
-Previously: n8n built system prompts from brand voice payload → called Claude per platform.
-Now: n8n receives pre-built `{ systemPrompt, userPrompt }` per platform → passes directly to Claude.
-
-For each platform in `payload.contentPrompts`:
-```javascript
-// n8n HTTP Request node — Claude API call per platform
-{
-  model: "claude-sonnet-4-20250514",
-  max_tokens: 1024,
-  system: payload.contentPrompts[platform].systemPrompt,
-  messages: [{ role: "user", content: payload.contentPrompts[platform].userPrompt }]
-}
-```
-
-Remove: Code node that built system prompts from brand voice. No longer needed.
-Keep: Sheet write, callback, error handler.
-
-**Workflow 2 (Image repurpose) — updated:**
-
-Previously: n8n received image prompts as simple strings → called fal.ai with basic params.
-Now: n8n receives full `{ prompt, sourceImageUrl, styleDirectives, negativePrompt }` per platform.
-
-For each platform in `payload.imagePayloads`:
-```javascript
-// n8n HTTP Request node — fal.ai call per platform
-{
-  prompt: payload.imagePayloads[platform].prompt,
-  image_size: {
-    width: payload.imagePayloads[platform].styleDirectives.width,
-    height: payload.imagePayloads[platform].styleDirectives.height
-  },
-  negative_prompt: payload.imagePayloads[platform].negativePrompt,
-  // If sourceImageUrl provided and model supports img2img:
-  image_url: payload.imagePayloads[platform].sourceImageUrl
-}
-```
-
-Remove: imageSizes and imagePrompts as separate fields. Replaced by imagePayloads.
-Keep: Sheet write, callback, error handler.
-
----
-
-### Updated ContentRepurposeWebhookPayload and ImageRepurposeWebhookPayload types
-
-Update in `types/index.ts`:
-
-```typescript
-// Updated Webhook 1 payload — skills pre-build all prompts
-export interface ContentRepurposeWebhookPayload {
-  postId: string
-  contentPrompts: Partial<Record<Platform, {
-    systemPrompt: string
-    userPrompt: string
-    context: {
-      platformLabel: string
-      maxChars: number
-      hashtagCount: string
-      threadEnabled: boolean
-      learningsApplied: string[]
-    }
-  }>>
-  callbackUrl: string
-  // brandVoice and hashtagBank removed — now handled inside skill files
-}
-
-// Updated Webhook 2 payload — skills pre-build full image payloads
-export interface ImageRepurposeWebhookPayload {
-  postId: string
-  imagePayloads: Partial<Record<Platform, {
-    prompt: string
-    sourceImageUrl: string | null
-    styleDirectives: {
-      aspectRatio: string
-      width: number
-      height: number
-      mood: string
-      colorTone: string
-      composition: string
-      textOverlay: false
-    }
-    negativePrompt: string
-  }>>
-  callbackUrl: string
-  // imagePrompts and imageSizes as separate fields removed — merged into imagePayloads
-}
-```
-
----
-
-### Learning system integration with platform skills
-
-Platform skill files are living documents — they improve as the learning system accumulates data. The cron skill's learning update operation (Operation 3) now also updates platform skill files when strong patterns emerge.
-
-Add to `skills/cron.md` Operation 3:
-
-```markdown
-### Operation 3b — Platform skill refinement
-
-After updating learnings.md, check if any platform has 5+ new high-confidence observations
-since the skill file was last updated (check file modified timestamp vs learnings entries).
-
-If yes:
-1. Call POST /api/docs/sync with:
-   - changelogEntry: "Learning system: [N] new high-confidence observations for [platform] — skill file updated"
-   - changedFiles: ["memory/learnings.md"]
-   - changeType: "feature-updated"
-
-This triggers the auto-documentation system to regenerate the platform skill file
-with the latest learnings baked directly into the prompt templates — so future
-repurposing uses improved prompts without any manual intervention.
-```
-
----
-
-### Implementation order additions
-
-Add after step 14c:
-
-```
-14c-i.  Platform skill files — generate all 10 skill files (5 content + 5 image) with correct
-         starter templates as specified above. These must exist before the repurpose skill executes.
-14c-ii. POST /api/skills/platform-prompt route — executes any platform skill and returns
-         structured output. Test each platform skill end-to-end before proceeding.
-14c-iii. Update POST /api/skills/repurpose to call platform skills in parallel before firing
-          n8n webhooks. Replace old brandVoice payload with contentPrompts map.
-14c-iv. Update n8n Workflow 1 and Workflow 2 to use the new simplified payload structure.
-         Update the n8n MCP prompt in the spec to reflect the simplified workflows.
-```
-
----
-
-## Auto-documentation system — living docs that update with the codebase
-
-Every time a feature is added, updated, or removed in Pulse Repurpose, the app automatically regenerates the affected documentation and AOS files. The app never drifts out of sync with its own docs. README.md always reflects what the app actually does. SOUL.md always reflects how it actually works. Skills always reflect what they actually execute.
-
-This system has two parts: a **detection layer** (what changed?) and a **generation layer** (what needs rewriting?).
-
----
-
-### How it works — overview
-
-When Claude Code makes any meaningful change to the codebase, it calls `POST /api/docs/sync` as a final step. This route:
-
-1. Reads a `CHANGELOG.md` entry (written by Claude Code describing what changed)
-2. Determines which docs are affected using a **file-to-doc impact map**
-3. For narrative docs (README, SOUL, skills): calls Claude API to intelligently rewrite affected sections
-4. For state/template docs (Heartbeat): rebuilds from structured app state
-5. Writes updated files to disk
-6. Logs the update to `memory/MEMORY.md`
-
-Claude Code is instructed (in the final notes section) to always call this route after completing any feature work.
-
----
-
-### CHANGELOG.md — the change journal
-
-Located at project root. Append-only. Written by Claude Code after every meaningful change. This file is the input to the doc sync system — it describes *what* changed so the system knows *what to update*.
-
-Format:
-
-```markdown
-# CHANGELOG.md
-
-## [2026-03-17] — Add content store
-
-### Type: feature-added
-### Files changed: lib/content-store.ts, app/api/content/[postId]/route.ts, app/api/callback/repurpose/route.ts
-### Summary: Added Markdown file persistence for all repurposed content. Each post now gets a content/[post_id]/ folder with _source.md and one .md file per platform. Files are written by callbacks and updated on approval/edit/publish events.
-### Docs affected: README.md, skills/repurpose.md, Heartbeat.md
-
----
-
-## [2026-03-16] — Add cron skill
-
-### Type: feature-added
-### Files changed: app/api/cron/route.ts, skills/cron.md
-### Summary: Implemented the cron skill execution route. Reads skills/cron.md and runs all 8 operations in sequence. Added CRON_SECRET protection and manual trigger button on dashboard.
-### Docs affected: README.md, skills/cron.md, SOUL.md
-
----
-```
-
-**Claude Code must write a CHANGELOG.md entry** — using the format above — at the end of every task before calling `/api/docs/sync`. If Claude Code forgets, the sync route reads the last git diff as a fallback.
-
----
-
-### File-to-doc impact map (lib/docs-sync.ts)
-
-This map defines which documentation files are affected when specific parts of the codebase change. The sync route uses this to avoid regenerating everything on every change — only affected docs are updated.
-
-```typescript
-export const DOC_IMPACT_MAP: Record<string, string[]> = {
-  // App routes
-  'app/api/**':                     ['README.md'],
-  'app/api/cron/**':                ['README.md', 'skills/cron.md', 'SOUL.md'],
-  'app/api/skills/**':              ['README.md', 'skills/repurpose.md'],
-  'app/api/skills/platform-prompt/**': ['README.md', 'skills/repurpose.md'],
-  'skills/platforms/**':            ['README.md', 'skills/repurpose.md'],
-  'app/api/trigger/**':             ['README.md', 'skills/repurpose.md'],
-  'app/api/callback/**':            ['README.md', 'skills/repurpose.md'],
-  'app/api/publish/**':             ['README.md'],
-  'app/api/docs/**':                ['README.md'],
-
-  // Core lib
-  'lib/n8n.ts':                     ['README.md', 'skills/repurpose.md', 'skills/cron.md'],
-  'lib/n8n-sheet.ts':               ['README.md', 'skills/repurpose.md', 'skills/cron.md'],
-  'lib/anthropic.ts':               ['README.md', 'SOUL.md', 'skills/repurpose.md'],
-  'lib/content-store.ts':           ['README.md', 'skills/repurpose.md'],
-  'lib/platform-rules.ts':          ['README.md', 'skills/repurpose.md', 'skills/cron.md'],
-  'lib/brand-voice.ts':             ['README.md', 'skills/repurpose.md'],
-
-  // AOS files themselves
-  'skills/repurpose.md':            ['README.md', 'Heartbeat.md'],
-  'skills/cron.md':                 ['README.md', 'Heartbeat.md', 'SOUL.md'],
-  'memory/**':                      ['Heartbeat.md'],
-
-  // Types
-  'types/index.ts':                 ['README.md', 'skills/repurpose.md'],
-
-  // UI pages
-  'app/dashboard/**':               ['README.md'],
-  'app/repurpose/**':               ['README.md', 'skills/repurpose.md'],
-  'app/calendar/**':                ['README.md'],
-  'app/settings/**':                ['README.md', 'SOUL.md'],
-
-  // Config
-  '.env.local.example':             ['README.md'],
-  'config/**':                      ['README.md', 'SOUL.md'],
-}
-
-// Resolve which docs need updating given a list of changed files
-export function resolveAffectedDocs(changedFiles: string[]): string[] {
-  const affected = new Set<string>()
-  for (const changed of changedFiles) {
-    for (const [pattern, docs] of Object.entries(DOC_IMPACT_MAP)) {
-      if (minimatch(changed, pattern)) {
-        docs.forEach(d => affected.add(d))
-      }
-    }
-  }
-  return Array.from(affected)
-}
-```
-
-Install `minimatch` for glob matching: `npm install minimatch`.
-
----
-
-### Generation strategy per file
-
-Each doc file has its own generation strategy. Claude handles narrative docs; structured templates handle state files.
-
-```typescript
-export const DOC_GENERATION_STRATEGY: Record<string, 'claude' | 'template' | 'claude+template'> = {
-  'README.md':              'claude',           // Full rewrite by Claude
-  'SOUL.md':                'claude',           // Selective section update by Claude
-  'skills/repurpose.md':    'claude',           // Selective step update by Claude
-  'skills/cron.md':         'claude',           // Selective operation update by Claude
-  'Heartbeat.md':           'template',         // Rebuilt from live app state
-  'memory/learnings.md':    'template',         // Append-only — new entry added, not rewritten
-}
-```
-
----
-
-### POST /api/docs/sync — the sync route
-
-This is the core of the auto-documentation system. Called by Claude Code after every feature change.
-
-**Request body:**
-```typescript
-{
-  changelogEntry: string        // The CHANGELOG.md entry text for this change
-  changedFiles: string[]        // List of files modified (relative paths)
-  changeType: 'feature-added' | 'feature-updated' | 'feature-removed' | 'bugfix' | 'refactor'
-  forceAll?: boolean            // If true, regenerate all docs regardless of impact map
-}
-```
-
-**Route implementation:**
-
-```typescript
-// app/api/docs/sync/route.ts
-
-export async function POST(req: Request) {
-  const body = await req.json()
-  const { changelogEntry, changedFiles, changeType, forceAll } = body
-
-  // 1. Append to CHANGELOG.md
-  await appendToChangelog(changelogEntry)
-
-  // 2. Determine affected docs
-  const affectedDocs = forceAll
-    ? Object.keys(DOC_GENERATION_STRATEGY)
-    : resolveAffectedDocs(changedFiles)
-
-  const results: Record<string, 'updated' | 'skipped' | 'failed'> = {}
-
-  // 3. Process each affected doc
-  for (const doc of affectedDocs) {
-    try {
-      const strategy = DOC_GENERATION_STRATEGY[doc]
-
-      if (strategy === 'claude' || strategy === 'claude+template') {
-        await regenerateWithClaude(doc, changelogEntry, changeType)
-      }
-
-      if (strategy === 'template' || strategy === 'claude+template') {
-        await regenerateWithTemplate(doc)
-      }
-
-      results[doc] = 'updated'
-    } catch (err) {
-      results[doc] = 'failed'
-      console.error(`Failed to update ${doc}:`, err)
-    }
-  }
-
-  // 4. Log to MEMORY.md
-  const updatedList = Object.entries(results)
-    .filter(([, v]) => v === 'updated')
-    .map(([k]) => k)
-    .join(', ')
-  await appendToMemory(
-    `[${new Date().toISOString()}] Doc sync triggered by ${changeType}. Updated: ${updatedList}. Change: ${changelogEntry.split('\n')[0]}`
-  )
-
-  return Response.json({ results, affectedDocs })
-}
-```
-
----
-
-### Claude-powered doc regeneration (lib/docs-sync.ts)
-
-```typescript
-async function regenerateWithClaude(
-  docPath: string,
-  changelogEntry: string,
-  changeType: string
-): Promise<void> {
-
-  // Read current file content
-  const currentContent = await fs.readFile(docPath, 'utf-8').catch(() => '')
-
-  // Read current codebase context (relevant files only, not entire codebase)
-  const context = await buildDocContext(docPath)
-
-  const systemPrompt = `You are the documentation system for Pulse Repurpose — a personal content
-repurposing app built as an Agentic Operating System.
-
-Your job is to update the file "${docPath}" to accurately reflect the current state of the app
-after a recent change.
-
-Rules:
-- Preserve the existing tone, structure, and style of the document
-- Only update sections that are genuinely affected by the change
-- Never remove sections unless the feature they describe was explicitly removed
-- For README.md: keep it developer-friendly, accurate, and scannable
-- For SOUL.md: only update operating principles if the change fundamentally alters how the app works
-- For skills/*.md: update the specific steps or operations that changed — not the whole file
-- Return the COMPLETE updated file content, not just the changed sections
-- Do not add commentary, preamble, or explanation — return only the file content`
-
-  const userPrompt = `The following change was just made to the app:
-
-${changelogEntry}
-
-Change type: ${changeType}
-
-Current content of ${docPath}:
-\`\`\`
-${currentContent}
-\`\`\`
-
-Relevant codebase context:
-${context}
-
-Return the updated content of ${docPath} that accurately reflects this change.`
-
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 4096,
-    messages: [{ role: 'user', content: userPrompt }],
-    system: systemPrompt,
-  })
-
-  const updatedContent = response.content[0].type === 'text' ? response.content[0].text : ''
-  if (updatedContent.trim()) {
-    await fs.writeFile(docPath, updatedContent)
-  }
-}
-```
-
----
-
-### Context builder — what Claude reads per doc
-
-Claude doesn't read the entire codebase for every doc update — only the files relevant to each doc are passed as context. This keeps prompts focused and fast.
-
-```typescript
-async function buildDocContext(docPath: string): Promise<string> {
-  const contextMap: Record<string, string[]> = {
-    'README.md': [
-      'package.json',
-      '.env.local.example',
-      'types/index.ts',
-      'lib/platform-rules.ts',
-      'SOUL.md',
-    ],
-    'SOUL.md': [
-      'lib/platform-rules.ts',
-      'lib/anthropic.ts',
-      'lib/n8n.ts',
-      'skills/repurpose.md',
-      'skills/cron.md',
-    ],
-    'skills/repurpose.md': [
-      'app/api/skills/repurpose/route.ts',
-      'app/api/trigger/repurpose/route.ts',
-      'app/api/callback/repurpose/route.ts',
-      'lib/anthropic.ts',
-      'lib/n8n.ts',
-      'lib/content-store.ts',
-    ],
-    'skills/cron.md': [
-      'app/api/cron/route.ts',
-      'lib/n8n-sheet.ts',
-      'lib/n8n.ts',
-    ],
-  }
-
-  const files = contextMap[docPath] ?? []
-  const parts: string[] = []
-
-  for (const file of files) {
-    try {
-      const fileContent = await fs.readFile(file, 'utf-8')
-      parts.push(`### ${file}
-\`\`\`
-${fileContent.slice(0, 3000)}
-\`\`\``)
-    } catch {
-      // File doesn't exist — skip
-    }
-  }
-
-  return parts.join('
-
-')
-}
-```
-
----
-
-### Template-based regeneration
-
-For Heartbeat.md (state file) and learnings.md (append-only), Claude is not used — these are rebuilt or appended programmatically.
-
-```typescript
-async function regenerateWithTemplate(docPath: string): Promise<void> {
-  if (docPath === 'Heartbeat.md') {
-    await rebuildHeartbeat()   // existing function — reads app state and rewrites Heartbeat.md
-    return
-  }
-
-  if (docPath === 'memory/learnings.md') {
-    // Append a doc-change observation rather than rewriting
-    const entry = `
-- [${new Date().toISOString().split('T')[0]}] System: Documentation auto-synced after codebase change. learnings.md structure preserved.`
-    await fs.appendFile('memory/learnings.md', entry)
-    return
-  }
-}
-```
-
----
-
-### Claude Code instructions — mandatory final step
-
-Add the following to the **Final notes for Claude Code** section. This is the instruction that makes the whole system work — Claude Code must follow this after every task.
-
-> **MANDATORY: After completing any feature addition, update, or removal:**
->
-> 1. Write a `CHANGELOG.md` entry in the format specified in the auto-documentation section. Include: date, type (feature-added/feature-updated/feature-removed), files changed, summary (2-3 sentences), docs affected.
-> 2. Call `POST /api/docs/sync` with the changelog entry, list of changed files, and change type.
-> 3. Wait for the sync response and verify all affected docs returned `"updated"` status. If any returned `"failed"`, retry that specific doc by calling the route again with `forceAll: false` and only the failed doc in `changedFiles`.
-> 4. If the `/api/docs/sync` route does not exist yet (early in build), write the CHANGELOG.md entry manually and skip the API call — the route will catch up when built.
->
-> This step is non-negotiable. Every feature change must be reflected in the docs before the task is considered complete.
-
----
-
-### GET /api/docs/status — doc freshness check
-
-```typescript
-// Returns the sync status of all docs — when each was last updated and whether
-// it may be stale relative to recent CHANGELOG entries
-
-// Response:
-{
-  docs: {
-    'README.md':           { lastUpdated: '2026-03-17T...', status: 'fresh' },
-    'SOUL.md':             { lastUpdated: '2026-03-15T...', status: 'stale' },  // older than last changelog
-    'skills/repurpose.md': { lastUpdated: '2026-03-17T...', status: 'fresh' },
-    'skills/cron.md':      { lastUpdated: '2026-03-17T...', status: 'fresh' },
-    'Heartbeat.md':        { lastUpdated: '2026-03-17T...', status: 'fresh' },
-  },
-  lastChangelogEntry: '2026-03-17T...',
-  staleDocs: ['SOUL.md']
-}
-```
-
-Add a **Docs status** indicator to the dashboard system panel (alongside the Heartbeat status bar). Show a green dot for fresh docs, amber for stale. "Sync docs" button triggers `POST /api/docs/sync` with `forceAll: true` for any stale docs.
-
----
-
-### .gitignore additions
-
-```gitignore
-# CHANGELOG.md should always be committed — it is the audit trail of all changes
-# Do not gitignore it.
-
-# .env.local.example should be committed (no secrets, just key names)
-# .env.local should NOT be committed (contains real secrets)
-.env.local
-```
-
----
-
-### Project structure additions
-
-Add these files to the project root:
-
-```
-CHANGELOG.md                        # Append-only change journal written by Claude Code
-```
-
-And these routes:
-```
-app/api/docs/
-├── sync/
-│   └── route.ts                    # POST — trigger doc regeneration
-└── status/
-    └── route.ts                    # GET — check doc freshness
-```
-
-And this lib file:
-```
-lib/docs-sync.ts                    # Impact map, context builder, Claude + template generators
-```
-
----
-
-## Content store — Markdown files per post per platform
-
-Every repurposed post is persisted as plain Markdown files in the `content/` directory. This is the human-readable, git-trackable, LLM-accessible record of all content ever created by the app. It complements the Google Sheet (which is the operational state tracker) — the Sheet tells you *where* a post is in the pipeline, the content files tell you *what* was written and how it evolved.
-
-### Directory structure
-
-```
-content/
-└── post_001/
-    ├── _source.md
-    ├── twitter.md
-    ├── threads.md
-    ├── instagram.md
-    ├── facebook.md
-    └── skool.md
-```
-
-One folder per LinkedIn post, named by `post_id`. Created automatically when a post is first repurposed. Files are created or overwritten whenever content for that platform changes.
-
----
-
-### File formats
-
-#### `_source.md` — Original LinkedIn post
-
-Created when repurposing begins. Never overwritten after creation.
-
-```markdown
----
-post_id: post_001
-posted_at: 2026-03-15T08:30:00Z
-linkedin_image_url: https://...
-scraped_at: 2026-03-15T09:00:00Z
----
-
-# Source — LinkedIn
-
-The biggest mistake I made in my first year of building was optimizing
-for revenue instead of retention. Here's what I learned the hard way...
-
-[full LinkedIn post text]
-```
-
-#### `twitter.md` — Twitter/X variant
-
-```markdown
----
-post_id: post_001
-platform: twitter
-status: published
-generated_at: 2026-03-15T09:05:00Z
-approved_at: 2026-03-15T11:20:00Z
-published_at: 2026-03-15T14:00:00Z
-scheduled_at: 2026-03-15T14:00:00Z
-image_url: https://...
-image_prompt: A split visual showing a revenue graph declining while a retention graph rises...
-hashtags: buildinpublic, startups, saas
-edited_by_user: false
-version: 1
----
-
-# Twitter / X
-
-Optimizing for revenue before retention almost killed my startup.
-
-Here's the painful lesson:
-
-1/ We hit $10k MRR in month 3. Everyone celebrated.
-
-2/ Churn hit 18% in month 4. We'd been papering over a leaky bucket.
-
-3/ It took 6 months to fix the product. Revenue stalled. Team morale tanked.
-
-The companies that win long-term obsess over why people stay, not just why they sign up.
-
-Build retention first. Revenue follows.
-```
-
-#### `threads.md`, `instagram.md`, `facebook.md`, `skool.md`
-
-Same structure as `twitter.md` — frontmatter + content body. Each uses the appropriate platform-specific format.
-
-**Instagram example:**
-
-```markdown
----
-post_id: post_001
-platform: instagram
-status: approved
-generated_at: 2026-03-15T09:05:00Z
-approved_at: 2026-03-15T11:45:00Z
-published_at: null
-scheduled_at: 2026-03-16T11:00:00Z
-image_url: https://...
-image_prompt: Clean minimal graphic showing a retention funnel with a heart icon...
-hashtags: buildinpublic, startuplessons, saas, founderlife, productgrowth, retention, churn, startuplife
-edited_by_user: true
-version: 2
----
-
-# Instagram
-
-I almost destroyed my startup chasing the wrong number.
-
-We hit $10k MRR and I thought we'd made it.
-
-Then churn hit 18%.
-
-Turns out we'd been pouring water into a bucket with holes.
-
-Six months of painful rebuilding followed.
-
-The lesson I'll never forget: revenue is a lagging indicator.
-Retention tells you the truth.
-
-Build something people actually want to keep using.
-That's the only metric that compounds.
-
-#buildinpublic #startuplessons #saas #founderlife #productgrowth #retention #churn #startuplife
-```
-
----
-
-### Frontmatter fields — full spec
-
-All platform files use these frontmatter fields:
-
-```yaml
-post_id: string                   # Links back to the Sheet row
-platform: string                  # twitter | threads | instagram | facebook | skool
-status: string                    # pending | approved | scheduled | published | failed
-generated_at: ISO string          # When AI first generated this variant
-approved_at: ISO string | null    # When user approved
-published_at: ISO string | null   # When actually published
-scheduled_at: ISO string | null   # When scheduled to publish
-image_url: string | null          # URL of the generated image
-image_prompt: string | null       # Exact prompt used to generate the image
-hashtags: string                  # Comma-separated, no # prefix
-edited_by_user: boolean           # true if user made any manual edits
-version: integer                  # Increments on every regeneration (starts at 1)
-```
-
----
-
-### lib/content-store.ts — file system helper
-
-Create this file to handle all reads and writes to the `content/` directory.
-
-```typescript
-import fs from 'fs/promises'
-import path from 'path'
-import matter from 'gray-matter'           // npm install gray-matter
-
-const CONTENT_DIR = path.join(process.cwd(), 'content')
-
-// Ensure post folder exists
-async function ensurePostDir(postId: string): Promise<string> {
-  const dir = path.join(CONTENT_DIR, postId)
-  await fs.mkdir(dir, { recursive: true })
-  return dir
-}
-
-// Write _source.md — only if it doesn't already exist
-export async function writeSourceFile(post: LinkedInPost): Promise<void> {
-  const dir = await ensurePostDir(post.id)
-  const filePath = path.join(dir, '_source.md')
-  try {
-    await fs.access(filePath)
-    return // already exists — never overwrite source
-  } catch {
-    const frontmatter = {
-      post_id: post.id,
-      posted_at: post.postedAt,
-      linkedin_image_url: post.linkedinImageUrl ?? null,
-      scraped_at: new Date().toISOString(),
-    }
-    const body = `# Source — LinkedIn
-
-${post.linkedinText}`
-    await fs.writeFile(filePath, matter.stringify(body, frontmatter))
-  }
-}
-
-// Write or overwrite a platform variant file
-export async function writePlatformFile(
-  postId: string,
-  platform: Platform,
-  variant: PlatformVariant,
-  currentVersion?: number
-): Promise<void> {
-  const dir = await ensurePostDir(postId)
-  const filePath = path.join(dir, `${platform}.md`)
-
-  // Read existing version number if file exists
-  let version = 1
-  try {
-    const existing = matter(await fs.readFile(filePath, 'utf-8'))
-    version = (currentVersion ?? (existing.data.version as number) ?? 0) + 1
-  } catch {
-    version = 1
-  }
-
-  const frontmatter = {
-    post_id: postId,
-    platform,
-    status: variant.status,
-    generated_at: variant.generatedAt ?? new Date().toISOString(),
-    approved_at: variant.approvedAt ?? null,
-    published_at: variant.publishedAt ?? null,
-    scheduled_at: variant.scheduledAt ?? null,
-    image_url: variant.imageUrl ?? null,
-    image_prompt: variant.imagePrompt ?? null,
-    hashtags: variant.hashtags.join(', '),
-    edited_by_user: variant.isEdited ?? false,
-    version,
-  }
-
-  const platformLabel = {
-    twitter: 'Twitter / X',
-    threads: 'Threads',
-    instagram: 'Instagram',
-    facebook: 'Facebook',
-    skool: 'Skool Community',
-  }[platform]
-
-  const hashtagLine = variant.hashtags.length > 0 && ['instagram', 'threads'].includes(platform)
-    ? `
-
-${variant.hashtags.map(h => '#' + h).join(' ')}`
-    : ''
-
-  const body = `# ${platformLabel}
-
-${variant.text ?? ''}${hashtagLine}`
-  await fs.writeFile(filePath, matter.stringify(body, frontmatter))
-}
-
-// Read a platform file back into a structured object
-export async function readPlatformFile(
-  postId: string,
-  platform: Platform
-): Promise<{ frontmatter: Record<string, unknown>; text: string } | null> {
-  const filePath = path.join(CONTENT_DIR, postId, `${platform}.md`)
-  try {
-    const raw = await fs.readFile(filePath, 'utf-8')
-    const parsed = matter(raw)
-    return { frontmatter: parsed.data, text: parsed.content.trim() }
-  } catch {
-    return null
-  }
-}
-
-// Read all platform files for a post
-export async function readAllPlatformFiles(
-  postId: string
-): Promise<Partial<Record<Platform, { frontmatter: Record<string, unknown>; text: string }>>> {
-  const platforms: Platform[] = ['twitter', 'threads', 'instagram', 'facebook', 'skool']
-  const results: Partial<Record<Platform, { frontmatter: Record<string, unknown>; text: string }>> = {}
-  await Promise.all(
-    platforms.map(async (p) => {
-      const result = await readPlatformFile(postId, p)
-      if (result) results[p] = result
-    })
-  )
-  return results
-}
-
-// Update only the frontmatter fields of an existing file (e.g. status change)
-export async function updatePlatformFileMeta(
-  postId: string,
-  platform: Platform,
-  updates: Partial<Record<string, unknown>>
-): Promise<void> {
-  const filePath = path.join(CONTENT_DIR, postId, `${platform}.md`)
-  try {
-    const raw = await fs.readFile(filePath, 'utf-8')
-    const parsed = matter(raw)
-    const newFrontmatter = { ...parsed.data, ...updates }
-    await fs.writeFile(filePath, matter.stringify(parsed.content, newFrontmatter))
-  } catch {
-    // File doesn't exist yet — skip silently
-  }
-}
-
-// List all post IDs that have a content folder
-export async function listContentPostIds(): Promise<string[]> {
-  try {
-    const entries = await fs.readdir(CONTENT_DIR, { withFileTypes: true })
-    return entries.filter(e => e.isDirectory()).map(e => e.name)
-  } catch {
-    return []
-  }
-}
-```
-
-Also add `generated_at` and `isEdited` to `PlatformVariant` type in `types/index.ts`:
-```typescript
-export interface PlatformVariant {
-  text: string | null
-  contentPrompt: string | null      // JSON string of { systemPrompt, userPrompt } from content skill — Sheet col F/O/X/AG/AP
-  imagePrompt: string | null        // fal.ai prompt string from image skill — Sheet col G/P/Y/AH/AQ
-  imageUrl: string | null
-  hashtags: string[]
-  status: PostStatus
-  generatedAt: string | null        // ISO date string, set when AI generates
-  scheduledAt: string | null
-  publishedAt: string | null
-  approvedAt: string | null         // ISO date string, set when user approves
-  isEdited: boolean
-  error: string | null
-}
-```
-
----
-
-### When content files are written
-
-Content files are written at these moments — all calls go through `lib/content-store.ts`:
-
-| Event | File written | Who calls it |
-|---|---|---|
-| Repurpose triggered for a post | `_source.md` | `POST /api/skills/repurpose` — before firing webhook |
-| n8n callback received (text done) | `[platform].md` for all platforms with text | `POST /api/callback/repurpose` |
-| n8n callback received (images done) | Update `image_url` + `image_prompt` frontmatter in each platform file | `POST /api/callback/images` |
-| User approves a variant | Update `status: approved`, `approved_at` frontmatter | `PATCH /api/posts/[id]` |
-| User edits text in UI | Overwrite body, set `edited_by_user: true`, increment `version` | `PATCH /api/posts/[id]` |
-| User schedules a variant | Update `scheduled_at` frontmatter | `POST /api/publish` |
-| n8n publish callback | Update `status: published`, `published_at` frontmatter | `POST /api/callback/publish` (new) |
-| User regenerates a platform | Overwrite `[platform].md`, increment `version` | `POST /api/skills/repurpose` single-platform |
-
----
-
-### Content files and the learning system
-
-The content files feed directly into the AOS learning layer:
-
-- **learnings.md** — the cron skill reads content files to detect edits (diff between `edited_by_user: true` files and their AI-generated version 1), then appends observations to `learnings.md`
-- **skills/repurpose.md** — the repurpose skill can scan existing content files for approved posts to extract voice patterns before generating new content (in addition to learnings.md)
-- **memory/USER.md** — the cron skill reads approved content files to build/update the user's voice fingerprint in USER.md
-- **Heartbeat.md** — pipeline counts in Heartbeat.md are derived by scanning content file frontmatter statuses (as a cross-check against the Sheet)
-
----
-
-### API route additions
-
-**GET /api/content/[postId]**
-- Returns all platform files for a post as structured JSON
-- Calls `readAllPlatformFiles(postId)`
-- Used by the repurpose page to load existing content without a Sheet round-trip
-
-**GET /api/content/[postId]/[platform]**
-- Returns a single platform file
-- Used for the "view raw markdown" button in the platform card
-
-**GET /api/content**
-- Lists all post IDs that have content folders
-- Returns `{ postIds: string[] }`
-
----
-
-### UI additions
-
-**"View markdown" button** on each platform card in the repurpose page:
-- Opens a slide-over showing the raw `.md` file content (read-only, monospace font)
-- Shows frontmatter fields as a clean key-value table above the content body
-- Shows version number and edit history metadata
-- "Copy markdown" button to copy to clipboard
-
-**Content browser** in the dashboard slide-over panel:
-- When viewing a post's detail slide-over, add a "Content files" tab alongside the existing platform status view
-- Shows each platform file's current version, last edited timestamp, and a preview of the first 100 chars of content
-
----
-
-### .gitignore guidance
-
-Add a comment in `.gitignore` explaining the content folder strategy:
-
-```gitignore
-# AOS Memory — personal data, optionally gitignore
-# memory/learnings.md
-# memory/USER.md
-# memory/daily/
-
-# Content store — these are your repurposed posts, git tracking is recommended
-# so you have a full history of every version of every piece of content.
-# Uncomment below only if you want to keep content local:
-# content/
-```
-
-The default is to **commit** the `content/` folder — version history in git doubles as a content audit trail, and you can see exactly how a post evolved across regenerations via `git log content/post_001/twitter.md`.
-
-
----
-
-## Creating n8n workflows via n8n MCP server
-
-Once the app is built, use the n8n MCP server connected to Claude Code to create all 4 workflows automatically — no manual clicking in the n8n UI required.
-
-### Step 1 — Connect the n8n MCP server to Claude Code
-
-Run this command in your terminal (replace URL and token with your own):
-
-```bash
-claude mcp add --transport http n8n-mcp https://your-n8n-instance.com/mcp-server/http \
-  --header "Authorization: Bearer YOUR_N8N_API_KEY"
-```
-
-Generate your API key in n8n under **Settings → API → Create API Key**.
-Verify the connection is working by running `claude` and checking that n8n tools appear.
-
-### Step 2 — Create workflows one at a time
-
-Paste each prompt below into Claude Code **one at a time**, verify the workflow was created and activated in n8n, copy the returned webhook URL into `.env.local`, then proceed to the next.
-
-**Order is important**: Workflow 0 must be created and activated first since Workflows 1, 2, and 3 all depend on its webhook URL.
-
----
-
-### WORKFLOW 0 PROMPT — Sheet Operations
-
-```
-Using the n8n MCP server tools, create a new n8n workflow with the following exact specification. Create it step by step, adding each node, connecting them correctly, and adding all sticky note nodes as documentation. Name the workflow "Pulse - Sheet Operations".
-
-═══════════════════════════════════════
-STICKY NOTES — add these first
-═══════════════════════════════════════
-
-STICKY NOTE 1 — top of canvas, named "📋 WORKFLOW OVERVIEW":
-Content:
-PULSE - SHEET OPERATIONS (Workflow 0)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-PURPOSE:
-Single gateway for ALL Google Sheet read/write operations.
-Every other workflow and the app itself calls THIS workflow
-instead of touching Google Sheets directly.
-The app has zero Google credentials — this workflow owns all Sheet access.
-
-TRIGGER: POST webhook — called by:
-  - App routes (via lib/n8n-sheet.ts helper)
-  - Workflow 1 (Content Repurpose) — to write generated text
-  - Workflow 2 (Image Repurpose) — to write image URLs
-  - Workflow 3 (Publish) — to update post status
-
-CRITICAL — THIS WORKFLOW IS SYNCHRONOUS:
-Unlike Workflows 1, 2, 3 which respond immediately and process async,
-this workflow MUST complete the Sheet operation BEFORE responding.
-The caller is waiting for the response — do NOT use immediate response.
-Timeout on caller side is 15 seconds. Keep Sheet operations fast.
-
-SUPPORTED ACTIONS (7 total):
-  GET_ALL_POSTS             → Read all rows, map to LinkedInPost[]
-  GET_POST_BY_ID            → Find one row by post_id
-  UPDATE_PLATFORM_VARIANT   → Update one platform's columns on one row
-  UPDATE_MULTIPLE_PLATFORMS → Update all platforms on one row (batch)
-  WRITE_CONTENT_PROMPTS     → Write content_prompt columns only
-  WRITE_IMAGE_PROMPTS       → Write image_prompt columns only
-  UPDATE_STATUS             → Write status/published_at/error columns only
-
-GOOGLE SHEET STRUCTURE:
-  Sheet name: "Posts"
-  Columns A-D: post_id, linkedin_text, linkedin_image_url, posted_at
-  Columns E-AW: 5 platforms x 9 columns each
-  Each platform: text, content_prompt, image_prompt, image_url,
-                 hashtags, status, scheduled_at, published_at, error
-
-CREDENTIALS REQUIRED:
-  Google Sheets service account — credential name: "Google Sheets - Pulse Repurpose"
-  Spreadsheet ID: stored in n8n variable SPREADSHEET_ID
-
-COLUMN MAP (hardcoded in "Define Column Map" Code node):
-  twitter:   E F G H I J K L M
-  threads:   N O P Q R S T U V
-  instagram: W X Y Z AA AB AC AD AE
-  facebook:  AF AG AH AI AJ AK AL AM AN
-  skool:     AO AP AQ AR AS AT AU AV AW
-
-STICKY NOTE 2 — near Webhook node, named "⚡ WEBHOOK TRIGGER":
-Content:
-WEBHOOK TRIGGER
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Path: pulse-sheet
-Method: POST
-Response Mode: Using Respond to Webhook Node
-
-WHY "RESPOND TO WEBHOOK" MODE?
-This mode tells n8n to NOT auto-respond after the trigger fires.
-Instead, each action branch ends with its own "Respond to Webhook"
-node that sends back the actual data. Required for synchronous
-request/response behaviour.
-
-EXPECTED REQUEST ENVELOPE:
-{ "action": "GET_ALL_POSTS", "payload": { ...fields... } }
-
-COPY THIS URL after activating:
-→ Add to .env.local as N8N_SHEET_WEBHOOK_URL
-→ Add to Workflow 1, 2, 3 as variable N8N_SHEET_WEBHOOK_URL
-→ This is the most important URL in the entire system.
-
-TESTING:
-curl -X POST [this-url] \
-  -H "Content-Type: application/json" \
-  -d '{"action":"GET_ALL_POSTS","payload":{}}'
-Should return { posts: [...] }
-
-STICKY NOTE 3 — near "Define Column Map" node, named "🗺️ COLUMN MAP":
-Content:
-DEFINE COLUMN MAP
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-This Code node defines COLUMN_MAP and passes it downstream to every
-branch. It is the single source of truth for column positions.
-
-COLUMN LAYOUT (9 columns per platform):
-  [0] text           — repurposed post text
-  [1] content_prompt — JSON { systemPrompt, userPrompt } from skill
-  [2] image_prompt   — fal.ai prompt string from image skill
-  [3] image_url      — generated image URL
-  [4] hashtags       — comma-separated, no # prefix
-  [5] status         — pending/repurposed/approved/scheduled/published/failed
-  [6] scheduled_at   — ISO date string
-  [7] published_at   — ISO date string
-  [8] error          — error message or empty
-
-IF YOU ADD A COLUMN IN FUTURE:
-Update ONLY this node. All other nodes use COLUMN_MAP dynamically.
-
-STICKY NOTE 4 — near Switch node, named "🔀 ACTION ROUTER":
-Content:
-ACTION ROUTER (Switch Node)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Routes incoming requests to the correct branch based on "action" field.
-Output 0 → GET_ALL_POSTS
-Output 1 → GET_POST_BY_ID
-Output 2 → UPDATE_PLATFORM_VARIANT
-Output 3 → UPDATE_MULTIPLE_PLATFORMS
-Output 4 → WRITE_CONTENT_PROMPTS
-Output 5 → WRITE_IMAGE_PROMPTS
-Output 6 → UPDATE_STATUS
-
-STICKY NOTE 5 — near GET_ALL_POSTS branch, named "📖 GET ALL POSTS":
-Content:
-BRANCH: GET_ALL_POSTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Reads all rows, maps to LinkedInPost[] format.
-OPTIONAL FILTERS: statusFilter, platformFilter, fromDate, toDate
-GOOGLE SHEETS NODE: Operation=Get Many, Return All=YES, First Row as Headers=YES
-RESPONSE: { success: true, posts: LinkedInPost[] }
-
-STICKY NOTE 6 — near GET_POST_BY_ID branch, named "🔍 GET POST BY ID":
-Content:
-BRANCH: GET_POST_BY_ID
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PAYLOAD: { postId: "post_001" }
-RESPONSE: { success: true, post: LinkedInPost | null }
-Returns null (not an error) if post_id not found.
-
-STICKY NOTE 7 — near UPDATE_PLATFORM_VARIANT branch, named "✏️ UPDATE VARIANT":
-Content:
-BRANCH: UPDATE_PLATFORM_VARIANT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PAYLOAD: { postId, platform, variant: Partial<PlatformVariant> }
-Only fields explicitly provided in variant are written.
-Undefined fields are left unchanged in the Sheet.
-
-STICKY NOTE 8 — near UPDATE_MULTIPLE_PLATFORMS branch, named "✏️✏️ UPDATE MULTI":
-Content:
-BRANCH: UPDATE_MULTIPLE_PLATFORMS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PAYLOAD: { postId, variants: { [platform]: Partial<PlatformVariant> } }
-Updates multiple platforms in a single Google Sheets API call.
-Used by Workflows 1 and 2 after generating content/images.
-
-STICKY NOTE 9 — near WRITE_CONTENT_PROMPTS branch, named "📝 CONTENT PROMPTS":
-Content:
-BRANCH: WRITE_CONTENT_PROMPTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PAYLOAD: { postId, prompts: { [platform]: JSON.stringify({systemPrompt, userPrompt}) } }
-Written BEFORE Workflow 1 fires so prompt is persisted even if Claude fails.
-Stored as JSON string in content_prompt column per platform.
-
-STICKY NOTE 10 — near WRITE_IMAGE_PROMPTS branch, named "🎨 IMAGE PROMPTS":
-Content:
-BRANCH: WRITE_IMAGE_PROMPTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PAYLOAD: { postId, prompts: { [platform]: "fal.ai prompt string" } }
-Written BEFORE Workflow 2 fires so prompt is persisted even if fal.ai fails.
-Plain string (not JSON) in image_prompt column per platform.
-
-STICKY NOTE 11 — near UPDATE_STATUS branch, named "🚦 UPDATE STATUS":
-Content:
-BRANCH: UPDATE_STATUS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PAYLOAD: { postId, platform, status, publishedAt?, error? }
-VALID STATUS VALUES:
-  pending → repurposed → approved → scheduled → published → failed
-Used by Workflow 3 after publishing. Lightweight — only touches status columns.
-
-STICKY NOTE 12 — near error handler, named "❌ ERROR HANDLER":
-Content:
-ERROR HANDLER
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Returns HTTP 200 (not 500) with { success: false, error: "message" }.
-App checks response.data.success, not HTTP status code.
-
-COMMON ERRORS:
-- "caller does not have permission" → share Sheet with service account email (Editor)
-- "Unable to parse range" → sheet tab must be named exactly "Posts"
-- "Quota exceeded" → Google Sheets API rate limit, add Wait node
-- Empty response → ensure row 1 is headers, data starts row 2
-
-═══════════════════════════════════════
-NODES
-═══════════════════════════════════════
-
-STEP 1 — Create workflow named "Pulse - Sheet Operations"
-
-STEP 2 — Webhook node:
-- HTTP Method: POST, Path: pulse-sheet
-- Response Mode: Using Respond to Webhook Node
-
-STEP 3 — Code node "Define Column Map" (connected to Webhook):
-- Mode: Run Once for All Items
-const COLUMN_MAP = {
-  twitter:   { text:'E', contentPrompt:'F', imagePrompt:'G', imageUrl:'H', hashtags:'I', status:'J', scheduledAt:'K', publishedAt:'L', error:'M' },
-  threads:   { text:'N', contentPrompt:'O', imagePrompt:'P', imageUrl:'Q', hashtags:'R', status:'S', scheduledAt:'T', publishedAt:'U', error:'V' },
-  instagram: { text:'W', contentPrompt:'X', imagePrompt:'Y', imageUrl:'Z', hashtags:'AA', status:'AB', scheduledAt:'AC', publishedAt:'AD', error:'AE' },
-  facebook:  { text:'AF', contentPrompt:'AG', imagePrompt:'AH', imageUrl:'AI', hashtags:'AJ', status:'AK', scheduledAt:'AL', publishedAt:'AM', error:'AN' },
-  skool:     { text:'AO', contentPrompt:'AP', imagePrompt:'AQ', imageUrl:'AR', hashtags:'AS', status:'AT', scheduledAt:'AU', publishedAt:'AV', error:'AW' },
-};
-const body = $input.first().json.body;
-return [{ json: { ...body, COLUMN_MAP } }];
-
-STEP 4 — Switch node "Route Action" (connected to "Define Column Map"):
-- Mode: Rules, Data Type: String
-- Value: {{ $json.action }}
-- Rule 1: equals "GET_ALL_POSTS" → output 0
-- Rule 2: equals "GET_POST_BY_ID" → output 1
-- Rule 3: equals "UPDATE_PLATFORM_VARIANT" → output 2
-- Rule 4: equals "UPDATE_MULTIPLE_PLATFORMS" → output 3
-- Rule 5: equals "WRITE_CONTENT_PROMPTS" → output 4
-- Rule 6: equals "WRITE_IMAGE_PROMPTS" → output 5
-- Rule 7: equals "UPDATE_STATUS" → output 6
-
-STEP 5 — BRANCH 0 (GET_ALL_POSTS):
-Google Sheets node "GS Read All Rows":
-- Operation: Get Many, Sheet: Posts, Return All: true, First Row as Headers: true
-- Credential: "Google Sheets - Pulse Repurpose", SpreadsheetID: ={{ $vars.SPREADSHEET_ID }}
-
-Code node "Map Rows To Posts":
-const rows = $input.all();
-const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
-const payload = $('Define Column Map').first().json.payload || {};
-const platforms = ['twitter','threads','instagram','facebook','skool'];
-const posts = rows.map(row => {
-  const r = row.json;
-  if (!r['post_id']) return null;
-  const platformData = {};
-  platforms.forEach(p => {
-    const cols = COLUMN_MAP[p];
-    platformData[p] = {
-      text: r[cols.text]||null, contentPrompt: r[cols.contentPrompt]||null,
-      imagePrompt: r[cols.imagePrompt]||null, imageUrl: r[cols.imageUrl]||null,
-      hashtags: r[cols.hashtags] ? r[cols.hashtags].split(',').map(h=>h.trim()).filter(Boolean) : [],
-      status: r[cols.status]||'pending', scheduledAt: r[cols.scheduledAt]||null,
-      publishedAt: r[cols.publishedAt]||null, error: r[cols.error]||null,
-    };
-  });
-  return { id:r['post_id'], linkedinText:r['linkedin_text']||null, linkedinImageUrl:r['linkedin_image_url']||null, postedAt:r['posted_at']||null, platforms:platformData };
-}).filter(Boolean);
-let filtered = posts;
-if (payload.statusFilter) filtered = filtered.filter(p => Object.values(p.platforms).some(v => v.status===payload.statusFilter));
-if (payload.platformFilter) filtered = filtered.filter(p => p.platforms[payload.platformFilter]?.text);
-if (payload.fromDate) filtered = filtered.filter(p => p.postedAt >= payload.fromDate);
-if (payload.toDate) filtered = filtered.filter(p => p.postedAt <= payload.toDate);
-return [{ json: { success:true, posts:filtered } }];
-
-Respond to Webhook node "Respond: GET_ALL_POSTS":
-- Response Body: {{ JSON.stringify($json) }}
-
-STEP 6 — BRANCH 1 (GET_POST_BY_ID):
-Google Sheets node "GS Read For Lookup": same settings as STEP 5
-
-Code node "Find Row By Post ID":
-const rows = $input.all();
-const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
-const postId = $('Define Column Map').first().json.payload?.postId;
-const platforms = ['twitter','threads','instagram','facebook','skool'];
-const row = rows.find(r => r.json['post_id'] === postId);
-if (!row) return [{ json: { success:true, post:null } }];
-const r = row.json;
-const platformData = {};
-platforms.forEach(p => {
-  const cols = COLUMN_MAP[p];
-  platformData[p] = {
-    text:r[cols.text]||null, contentPrompt:r[cols.contentPrompt]||null,
-    imagePrompt:r[cols.imagePrompt]||null, imageUrl:r[cols.imageUrl]||null,
-    hashtags:r[cols.hashtags]?r[cols.hashtags].split(',').map(h=>h.trim()).filter(Boolean):[],
-    status:r[cols.status]||'pending', scheduledAt:r[cols.scheduledAt]||null,
-    publishedAt:r[cols.publishedAt]||null, error:r[cols.error]||null,
-  };
-});
-return [{ json: { success:true, post:{ id:r['post_id'], linkedinText:r['linkedin_text']||null, linkedinImageUrl:r['linkedin_image_url']||null, postedAt:r['posted_at']||null, platforms:platformData } } }];
-
-Respond to Webhook node "Respond: GET_POST_BY_ID":
-- Response Body: {{ JSON.stringify($json) }}
-
-STEP 7 — BRANCH 2 (UPDATE_PLATFORM_VARIANT):
-Code node "Build Single Variant Update":
-const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
-const { postId, platform, variant } = $('Define Column Map').first().json.payload;
-const cols = COLUMN_MAP[platform];
-const updateObj = { 'post_id': postId };
-if (variant.text !== undefined) updateObj[cols.text] = variant.text;
-if (variant.contentPrompt !== undefined) updateObj[cols.contentPrompt] = variant.contentPrompt;
-if (variant.imagePrompt !== undefined) updateObj[cols.imagePrompt] = variant.imagePrompt;
-if (variant.imageUrl !== undefined) updateObj[cols.imageUrl] = variant.imageUrl;
-if (variant.hashtags !== undefined) updateObj[cols.hashtags] = Array.isArray(variant.hashtags)?variant.hashtags.join(','):variant.hashtags;
-if (variant.status !== undefined) updateObj[cols.status] = variant.status;
-if (variant.scheduledAt !== undefined) updateObj[cols.scheduledAt] = variant.scheduledAt||'';
-if (variant.publishedAt !== undefined) updateObj[cols.publishedAt] = variant.publishedAt||'';
-if (variant.error !== undefined) updateObj[cols.error] = variant.error||'';
-return [{ json: updateObj }];
-
-Google Sheets node "GS Update Single Variant":
-- Operation: Update, Sheet: Posts, Matching Column: post_id
-- SpreadsheetID: ={{ $vars.SPREADSHEET_ID }}, Credential: "Google Sheets - Pulse Repurpose"
-
-Respond to Webhook node "Respond: UPDATE_VARIANT": Response Body: {"success":true}
-
-STEP 8 — BRANCH 3 (UPDATE_MULTIPLE_PLATFORMS):
-Code node "Build Multi Platform Update":
-const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
-const { postId, variants } = $('Define Column Map').first().json.payload;
-const updateObj = { 'post_id': postId };
-Object.entries(variants).forEach(([platform, variant]) => {
-  const cols = COLUMN_MAP[platform];
-  if (!cols) return;
-  if (variant.text !== undefined) updateObj[cols.text] = variant.text;
-  if (variant.contentPrompt !== undefined) updateObj[cols.contentPrompt] = variant.contentPrompt;
-  if (variant.imagePrompt !== undefined) updateObj[cols.imagePrompt] = variant.imagePrompt;
-  if (variant.imageUrl !== undefined) updateObj[cols.imageUrl] = variant.imageUrl;
-  if (variant.hashtags !== undefined) updateObj[cols.hashtags] = Array.isArray(variant.hashtags)?variant.hashtags.join(','):variant.hashtags;
-  if (variant.status !== undefined) updateObj[cols.status] = variant.status;
-  if (variant.scheduledAt !== undefined) updateObj[cols.scheduledAt] = variant.scheduledAt||'';
-  if (variant.publishedAt !== undefined) updateObj[cols.publishedAt] = variant.publishedAt||'';
-  if (variant.error !== undefined) updateObj[cols.error] = variant.error||'';
-});
-return [{ json: updateObj }];
-
-Google Sheets node "GS Update Multiple Platforms":
-- Operation: Update, Sheet: Posts, Matching Column: post_id
-- SpreadsheetID: ={{ $vars.SPREADSHEET_ID }}, Credential: "Google Sheets - Pulse Repurpose"
-
-Respond to Webhook node "Respond: UPDATE_MULTI": Response Body: {"success":true}
-
-STEP 9 — BRANCH 4 (WRITE_CONTENT_PROMPTS):
-Code node "Build Content Prompts Update":
-const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
-const { postId, prompts } = $('Define Column Map').first().json.payload;
-const updateObj = { 'post_id': postId };
-Object.entries(prompts).forEach(([platform, prompt]) => {
-  const cols = COLUMN_MAP[platform];
-  if (cols) updateObj[cols.contentPrompt] = prompt;
-});
-return [{ json: updateObj }];
-
-Google Sheets node "GS Write Content Prompts":
-- Operation: Update, Sheet: Posts, Matching Column: post_id
-- SpreadsheetID: ={{ $vars.SPREADSHEET_ID }}, Credential: "Google Sheets - Pulse Repurpose"
-
-Respond to Webhook node "Respond: WRITE_CONTENT_PROMPTS": Response Body: {"success":true}
-
-STEP 10 — BRANCH 5 (WRITE_IMAGE_PROMPTS):
-Code node "Build Image Prompts Update":
-const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
-const { postId, prompts } = $('Define Column Map').first().json.payload;
-const updateObj = { 'post_id': postId };
-Object.entries(prompts).forEach(([platform, prompt]) => {
-  const cols = COLUMN_MAP[platform];
-  if (cols) updateObj[cols.imagePrompt] = prompt;
-});
-return [{ json: updateObj }];
-
-Google Sheets node "GS Write Image Prompts":
-- Operation: Update, Sheet: Posts, Matching Column: post_id
-- SpreadsheetID: ={{ $vars.SPREADSHEET_ID }}, Credential: "Google Sheets - Pulse Repurpose"
-
-Respond to Webhook node "Respond: WRITE_IMAGE_PROMPTS": Response Body: {"success":true}
-
-STEP 11 — BRANCH 6 (UPDATE_STATUS):
-Code node "Build Status Update":
-const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
-const { postId, platform, status, publishedAt, error } = $('Define Column Map').first().json.payload;
-const cols = COLUMN_MAP[platform];
-const updateObj = { 'post_id':postId, [cols.status]:status };
-if (publishedAt) updateObj[cols.publishedAt] = publishedAt;
-if (error) updateObj[cols.error] = error;
-return [{ json: updateObj }];
-
-Google Sheets node "GS Update Status":
-- Operation: Update, Sheet: Posts, Matching Column: post_id
-- SpreadsheetID: ={{ $vars.SPREADSHEET_ID }}, Credential: "Google Sheets - Pulse Repurpose"
-
-Respond to Webhook node "Respond: UPDATE_STATUS": Response Body: {"success":true}
-
-STEP 12 — ERROR HANDLER:
-Error Trigger node "On Workflow Error" connected to:
-Respond to Webhook node "Respond: Error":
-- Response Body: {"success":false,"error":"={{ $json.message || 'Unknown error' }}"}
-- HTTP Status Code: 200
-
-STEP 13 — WORKFLOW VARIABLES:
-- SPREADSHEET_ID: your Google Sheets spreadsheet ID (from sheet URL)
-
-STEP 14 — CREDENTIAL:
-All Google Sheets nodes use credential "Google Sheets - Pulse Repurpose" (Service Account).
-Share the spreadsheet with the service account email (Editor access).
-
-STEP 15 — Activate the workflow.
-STEP 16 — Return the full webhook URL → add to .env.local as N8N_SHEET_WEBHOOK_URL
-          Also add this URL as variable N8N_SHEET_WEBHOOK_URL in Workflows 1, 2, and 3.
-```
-
----
-
-### WORKFLOW 1 PROMPT — Content Repurpose
-
-```
-Using the n8n MCP server tools, create a new n8n workflow with the following exact specification. Create it step by step, adding each node, connecting them correctly, and adding all sticky note nodes. Name the workflow "Pulse - Content Repurpose".
-
-═══════════════════════════════════════
-STICKY NOTES
-═══════════════════════════════════════
-
-STICKY NOTE 1 — top of canvas, named "📋 WORKFLOW OVERVIEW":
-PULSE - CONTENT REPURPOSE (Workflow 1)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PURPOSE:
-Receives pre-built Claude prompt payloads from the app (generated by
-platform content skill files), calls Claude API for all 5 platforms in
-parallel, writes results to Google Sheets via Workflow 0, then notifies
-the app via callback URL.
-
-TRIGGER: POST webhook — called by app route POST /api/trigger/repurpose
-
-CRITICAL — RESPONDS IMMEDIATELY:
-"Respond to Webhook" fires right after the trigger, BEFORE Claude calls.
-Claude generation takes 10-30 seconds. Without immediate response the
-app times out. Results written to Sheet; app polls for them.
-
-INPUTS:
-- postId: string
-- contentPrompts: { [platform]: { systemPrompt: string, userPrompt: string } }
-- callbackUrl: string
-
-IMPORTANT — PROMPTS ARE PRE-BUILT:
-The app's platform skill files already built systemPrompt + userPrompt.
-This workflow passes them directly to Claude — it does NOT build prompts.
-
-CREDENTIALS:
-- "Anthropic - Pulse" (API key header credential)
-- N8N_SHEET_WEBHOOK_URL (workflow variable = Workflow 0 URL)
-
-FLOW:
-Webhook → Respond 200 → Extract Body → Split Platforms →
-Call Claude API → Parse Response → Aggregate → Write to Sheet → Callback
-
-STICKY NOTE 2 — near Webhook, named "⚡ WEBHOOK TRIGGER":
-Path: pulse-content-repurpose, Method: POST
-Response Mode: Using Respond to Webhook Node
-COPY THIS URL → .env.local as N8N_CONTENT_REPURPOSE_WEBHOOK_URL
-
-PAYLOAD:
-{
-  "postId": "post_001",
-  "contentPrompts": {
-    "twitter":   { "systemPrompt": "...", "userPrompt": "..." },
-    "threads":   { "systemPrompt": "...", "userPrompt": "..." },
-    "instagram": { "systemPrompt": "...", "userPrompt": "..." },
-    "facebook":  { "systemPrompt": "...", "userPrompt": "..." },
-    "skool":     { "systemPrompt": "...", "userPrompt": "..." }
-  },
-  "callbackUrl": "https://your-app.com/api/callback/repurpose"
-}
-
-STICKY NOTE 3 — near "Split Platforms", named "🔀 SPLIT PLATFORMS":
-Converts contentPrompts object into 5 separate items (one per platform)
-so Claude API node runs once per platform concurrently.
-All 5 Claude calls fire at the same time — total wait = slowest single call.
-
-STICKY NOTE 4 — near "Call Claude API", named "🤖 CLAUDE API CALL":
-MODEL: claude-sonnet-4-20250514, MAX TOKENS: 1024
-CREDENTIAL: "Anthropic - Pulse" (Header Auth: x-api-key)
-PROMPTS ARE PRE-BUILT — pass systemPrompt and userPrompt directly.
-EXPECTED CLAUDE RESPONSE (JSON):
-{ "text": "post text", "hashtags": ["tag1"], "format": "single"|"thread" }
-
-STICKY NOTE 5 — near "Parse Claude Response", named "🔍 PARSE RESPONSE":
-Extracts Claude's JSON from content[0].text.
-Fallback: regex extract JSON block if Claude added explanation text.
-OUTPUT: { postId, platform, callbackUrl, generatedText, hashtags, format }
-
-STICKY NOTE 6 — near "Aggregate Results", named "📊 AGGREGATE":
-Waits for ALL 5 Claude calls, combines into single variants object.
-Sets status: "repurposed" for all platforms.
-Single Sheet write is faster than 5 separate writes.
-
-STICKY NOTE 7 — near "Write to Sheet", named "💾 WRITE TO SHEET":
-HTTP POST to Workflow 0 using UPDATE_MULTIPLE_PLATFORMS action.
-URL: {{ $vars.N8N_SHEET_WEBHOOK_URL }}
-Sets all platform statuses to "repurposed" — app polling detects this.
-
-STICKY NOTE 8 — near "Callback to App", named "📞 CALLBACK":
-POST to callbackUrl: { postId, status: "done" }
-App's /api/callback/repurpose re-fetches post from Sheet and refreshes UI.
-Continue on Fail: true — never block on callback failure.
-
-STICKY NOTE 9 — near error handler, named "❌ ERROR HANDLER":
-On error: sets all platform statuses to "failed" in Sheet via Workflow 0,
-then calls callbackUrl with { status: "failed", error: "..." }.
-COMMON ERRORS:
-- Anthropic 401 → check "Anthropic - Pulse" credential API key
-- Anthropic 429 → rate limit, retry after 60s
-- N8N_SHEET_WEBHOOK_URL undefined → set workflow variable
-
-═══════════════════════════════════════
-NODES
-═══════════════════════════════════════
-
-STEP 1 — Create workflow "Pulse - Content Repurpose"
-
-STEP 2 — Webhook node:
-- HTTP Method: POST, Path: pulse-content-repurpose
-- Response Mode: Using Respond to Webhook Node
-
-STEP 3 — Respond to Webhook node "Respond 200 Immediately" (connected directly to Webhook):
-- Response Code: 200, Body: {"received":true}
-- This fires FIRST before any processing
-
-STEP 4 — Code node "Extract Body" (connected to Webhook, parallel to Respond node):
-- Mode: Run Once for All Items
-const body = $input.first().json.body;
-return [{ json: { postId:body.postId, contentPrompts:body.contentPrompts, callbackUrl:body.callbackUrl } }];
-
-STEP 5 — Code node "Split Platforms" (connected to "Extract Body"):
-- Mode: Run Once for All Items
-const { postId, contentPrompts, callbackUrl } = $input.first().json;
-return Object.entries(contentPrompts).map(([platform, prompts]) => ({
-  json: { postId, platform, systemPrompt:prompts.systemPrompt, userPrompt:prompts.userPrompt, callbackUrl }
-}));
-
-STEP 6 — HTTP Request node "Call Claude API" (connected to "Split Platforms"):
-- Method: POST, URL: https://api.anthropic.com/v1/messages
-- Authentication: Header Auth, Credential: "Anthropic - Pulse"
-  (Header Name: x-api-key, Value: your Anthropic API key)
-- Additional header: anthropic-version = 2023-06-01
-- Body Type: JSON:
-{
-  "model": "claude-sonnet-4-20250514",
-  "max_tokens": 1024,
-  "system": "={{ $json.systemPrompt }}",
-  "messages": [{ "role": "user", "content": "={{ $json.userPrompt }}" }]
-}
-- Run per item, Timeout: 60000ms, Continue on Fail: true
-
-STEP 7 — Code node "Parse Claude Response" (connected to "Call Claude API"):
-- Mode: Run Once for Each Item
-const item = $input.first().json;
-const rawText = item.content?.[0]?.text || '';
-let parsed = { text:rawText, hashtags:[], format:'single' };
-try { parsed = JSON.parse(rawText); } catch {
-  const match = rawText.match(/\{[\s\S]*\}/);
-  if (match) { try { parsed = JSON.parse(match[0]); } catch {} }
-}
-return [{ json: {
-  postId: $('Split Platforms').item.json.postId,
-  platform: $('Split Platforms').item.json.platform,
-  callbackUrl: $('Split Platforms').item.json.callbackUrl,
-  generatedText: parsed.text||rawText,
-  hashtags: parsed.hashtags||[],
-  format: parsed.format||'single',
-} }];
-
-STEP 8 — Code node "Aggregate Results" (connected to "Parse Claude Response"):
-- Mode: Run Once for All Items
-const items = $input.all();
-const postId = items[0].json.postId;
-const callbackUrl = items[0].json.callbackUrl;
-const variants = {};
-items.forEach(item => {
-  variants[item.json.platform] = { text:item.json.generatedText, hashtags:item.json.hashtags, status:'repurposed' };
-});
-return [{ json: { postId, callbackUrl, variants } }];
-
-STEP 9 — HTTP Request node "Write to Sheet" (connected to "Aggregate Results"):
-- Method: POST, URL: ={{ $vars.N8N_SHEET_WEBHOOK_URL }}, Timeout: 15000ms
-- Body: { "action":"UPDATE_MULTIPLE_PLATFORMS", "payload": { "postId":"={{ $json.postId }}", "variants":"={{ $json.variants }}" } }
-
-STEP 10 — HTTP Request node "Callback to App" (connected to "Write to Sheet"):
-- Method: POST, URL: ={{ $('Aggregate Results').item.json.callbackUrl }}, Timeout: 10000ms
-- Body: { "postId":"={{ $('Aggregate Results').item.json.postId }}", "status":"done" }
-- Continue on Fail: true
-
-STEP 11 — Error Trigger "On Workflow Error" → Code node "Build Error Payload":
-const error = $input.first().json;
-const body = $('Extract Body').first()?.json || {};
-return [{ json: { postId:body.postId||'unknown', callbackUrl:body.callbackUrl||null, errorMessage:error.message||'Unknown error' } }];
-
-→ HTTP Request "Write Error to Sheet":
-{ "action":"UPDATE_MULTIPLE_PLATFORMS", "payload": { "postId":"={{ $json.postId }}", "variants":{ "twitter":{"status":"failed","error":"={{ $json.errorMessage }}"}, "threads":{"status":"failed","error":"={{ $json.errorMessage }}"}, "instagram":{"status":"failed","error":"={{ $json.errorMessage }}"}, "facebook":{"status":"failed","error":"={{ $json.errorMessage }}"}, "skool":{"status":"failed","error":"={{ $json.errorMessage }}"} } } }
-
-→ HTTP Request "Error Callback":
-{ "postId":"={{ $('Build Error Payload').item.json.postId }}", "status":"failed", "error":"={{ $('Build Error Payload').item.json.errorMessage }}" }
-Continue on Fail: true
-
-STEP 12 — WORKFLOW VARIABLE:
-N8N_SHEET_WEBHOOK_URL = webhook URL from Workflow 0
-
-STEP 13 — Activate the workflow.
-STEP 14 — Return the webhook URL → add to .env.local as N8N_CONTENT_REPURPOSE_WEBHOOK_URL
-```
-
----
-
-### WORKFLOW 2 PROMPT — Image Repurpose
-
-```
-Using the n8n MCP server tools, create a new n8n workflow with the following exact specification. Name the workflow "Pulse - Image Repurpose".
-
-═══════════════════════════════════════
-STICKY NOTES
-═══════════════════════════════════════
-
-STICKY NOTE 1 — top of canvas, named "📋 WORKFLOW OVERVIEW":
-PULSE - IMAGE REPURPOSE (Workflow 2)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PURPOSE:
-Receives pre-built image prompt payloads from the app (generated by
-platform image skill files), calls fal.ai for all 5 platforms in parallel,
-writes image URLs to Google Sheets via Workflow 0, then notifies app.
-
-TRIGGER: POST webhook — called by app route POST /api/trigger/images
-
-CRITICAL — RESPONDS IMMEDIATELY:
-fal.ai generation takes 15-45s per image. 5 in parallel = slowest single.
-Without immediate response the app times out (10s limit).
-
-INPUTS:
-- postId: string
-- imagePayloads: { [platform]: { prompt, sourceImageUrl, styleDirectives: { width, height }, negativePrompt } }
-- callbackUrl: string
-
-PROMPTS ARE PRE-BUILT by image skill files — this workflow passes them directly to fal.ai.
-
-CREDENTIALS:
-- "fal.ai - Pulse" (Generic credential: field apiKey)
-  Get key: https://fal.ai/dashboard/keys
-- N8N_SHEET_WEBHOOK_URL (workflow variable = Workflow 0 URL)
-
-FAL.AI MODEL: fal-ai/flux/schnell
-Cost: ~$0.003/image, ~$0.015 per full repurpose run (5 platforms)
-
-FLOW:
-Webhook → Respond 200 → Extract Body → Split Platforms →
-Call fal.ai → Parse Image URL → Aggregate → Write to Sheet → Callback
-
-STICKY NOTE 2 — near Webhook, named "⚡ WEBHOOK TRIGGER":
-Path: pulse-image-repurpose, Method: POST
-Response Mode: Using Respond to Webhook Node
-COPY THIS URL → .env.local as N8N_IMAGE_REPURPOSE_WEBHOOK_URL
-
-PAYLOAD:
-{
-  "postId": "post_001",
-  "imagePayloads": {
-    "twitter": { "prompt": "...", "sourceImageUrl": null, "styleDirectives": { "width":1200, "height":675 }, "negativePrompt": "text, words..." },
-    "threads": { ... }, "instagram": { ... }, "facebook": { ... }, "skool": { ... }
-  },
-  "callbackUrl": "https://your-app.com/api/callback/images"
-}
-
-STICKY NOTE 3 — near "Split Platforms", named "🔀 SPLIT PLATFORMS":
-Converts imagePayloads into 5 items. All 5 fal.ai calls run concurrently.
-Each item: { postId, platform, prompt, sourceImageUrl, width, height, negativePrompt, callbackUrl }
-
-STICKY NOTE 4 — near "Call fal.ai API", named "🎨 FAL.AI API CALL":
-MODEL: fal-ai/flux/schnell
-URL: https://fal.run/fal-ai/flux/schnell
-AUTH: Authorization: Key YOUR_FAL_KEY (credential "fal.ai - Pulse")
-BODY: { prompt, image_size: {width, height}, negative_prompt, num_inference_steps:4, num_images:1 }
-If sourceImageUrl provided, also include: image_url: sourceImageUrl
-Timeout: 60s, Continue on Fail: true (one failed image doesn't block others)
-Cost: ~$0.003 per image
-
-STICKY NOTE 5 — near "Parse Image URL", named "🔍 PARSE IMAGE URL":
-Extracts images[0].url from fal.ai response.
-On failure: imageUrl = null (not fatal — app shows "regenerate image" button).
-Image failure never blocks text content approval flow.
-
-STICKY NOTE 6 — near "Aggregate Results", named "📊 AGGREGATE":
-Waits for all 5 fal.ai calls (including any nulls from failures).
-Status stays "repurposed" even if imageUrl is null.
-Single batch Sheet write for all platforms.
-
-STICKY NOTE 7 — near "Write Image URLs to Sheet", named "💾 WRITE TO SHEET":
-HTTP POST to Workflow 0 with UPDATE_MULTIPLE_PLATFORMS.
-Only imageUrl field updated — text and hashtags from Workflow 1 unchanged.
-URL: {{ $vars.N8N_SHEET_WEBHOOK_URL }}
-
-STICKY NOTE 8 — near "Callback to App", named "📞 CALLBACK":
-POST to callbackUrl: { postId, status: "done" }
-App /api/callback/images re-fetches post and refreshes image previews in UI.
-Continue on Fail: true
-
-STICKY NOTE 9 — near error handler, named "❌ ERROR HANDLER":
-Catches fatal errors (not per-platform fal.ai failures — those use Continue on Fail).
-Calls callbackUrl with { status: "failed", error: "..." }.
-COMMON ERRORS:
-- fal.ai 401 → check "fal.ai - Pulse" API key at fal.ai/dashboard/keys
-- fal.ai 504 → timeout, retry or switch to fal-ai/flux/dev
-- N8N_SHEET_WEBHOOK_URL undefined → set workflow variable
-
-═══════════════════════════════════════
-NODES
-═══════════════════════════════════════
-
-STEP 1 — Create workflow "Pulse - Image Repurpose"
-
-STEP 2 — Webhook node:
-- HTTP Method: POST, Path: pulse-image-repurpose
-- Response Mode: Using Respond to Webhook Node
-
-STEP 3 — Respond to Webhook "Respond 200 Immediately" (connected directly to Webhook):
-- Response Code: 200, Body: {"received":true}
-
-STEP 4 — Code node "Extract Body" (connected to Webhook, parallel to Respond):
-const body = $input.first().json.body;
-return [{ json: { postId:body.postId, imagePayloads:body.imagePayloads, callbackUrl:body.callbackUrl } }];
-
-STEP 5 — Code node "Split Platforms" (connected to "Extract Body"):
-const { postId, imagePayloads, callbackUrl } = $input.first().json;
-return Object.entries(imagePayloads).map(([platform, payload]) => ({
-  json: {
-    postId, platform, callbackUrl,
-    prompt: payload.prompt,
-    sourceImageUrl: payload.sourceImageUrl||null,
-    width: payload.styleDirectives?.width||1080,
-    height: payload.styleDirectives?.height||1080,
-    negativePrompt: payload.negativePrompt||'text, words, letters, blurry, low quality, distorted',
-  }
-}));
-
-STEP 6 — HTTP Request node "Call fal.ai API" (connected to "Split Platforms"):
-- Method: POST, URL: https://fal.run/fal-ai/flux/schnell
-- Authentication: Header Auth, Credential: "fal.ai - Pulse"
-  (Header: Authorization, Value: Key {{ $credentials['fal.ai - Pulse'].apiKey }})
-- Body Type: JSON (expression mode):
-={
-  "prompt": $json.prompt,
-  "image_size": { "width": $json.width, "height": $json.height },
-  "negative_prompt": $json.negativePrompt,
-  "num_inference_steps": 4,
-  "num_images": 1,
-  ...($json.sourceImageUrl ? { "image_url": $json.sourceImageUrl } : {})
-}
-- Run per item, Timeout: 60000ms, Continue on Fail: true
-
-STEP 7 — Code node "Parse Image URL" (connected to "Call fal.ai API"):
-const response = $input.first().json;
-const platformData = $('Split Platforms').item.json;
-let imageUrl = null;
-let error = null;
-try {
-  imageUrl = response.images?.[0]?.url||null;
-  if (!imageUrl) error = 'fal.ai returned no image URL';
-} catch(e) { error = e.message; }
-return [{ json: { postId:platformData.postId, platform:platformData.platform, callbackUrl:platformData.callbackUrl, imageUrl, error } }];
-
-STEP 8 — Code node "Aggregate Results" (connected to "Parse Image URL"):
-const items = $input.all();
-const postId = items[0].json.postId;
-const callbackUrl = items[0].json.callbackUrl;
-const variants = {};
-items.forEach(item => { variants[item.json.platform] = { imageUrl:item.json.imageUrl }; });
-return [{ json: { postId, callbackUrl, variants } }];
-
-STEP 9 — HTTP Request "Write Image URLs to Sheet":
-- Method: POST, URL: ={{ $vars.N8N_SHEET_WEBHOOK_URL }}, Timeout: 15000ms
-- Body: { "action":"UPDATE_MULTIPLE_PLATFORMS", "payload": { "postId":"={{ $json.postId }}", "variants":"={{ $json.variants }}" } }
-
-STEP 10 — HTTP Request "Callback to App":
-- Method: POST, URL: ={{ $('Aggregate Results').item.json.callbackUrl }}, Timeout: 10000ms
-- Body: { "postId":"={{ $('Aggregate Results').item.json.postId }}", "status":"done" }
-- Continue on Fail: true
-
-STEP 11 — Error Trigger "On Workflow Error" → Code "Build Error Payload":
-const error = $input.first().json;
-const body = $('Extract Body').first()?.json||{};
-return [{ json: { postId:body.postId||'unknown', callbackUrl:body.callbackUrl||null, errorMessage:error.message||'Unknown error' } }];
-
-→ HTTP Request "Error Callback":
-{ "postId":"={{ $json.postId }}", "status":"failed", "error":"={{ $json.errorMessage }}" }
-URL: ={{ $json.callbackUrl }}, Continue on Fail: true
-
-STEP 12 — CREDENTIAL: Create Generic credential "fal.ai - Pulse" with field apiKey = your fal.ai key
-
-STEP 13 — WORKFLOW VARIABLE: N8N_SHEET_WEBHOOK_URL = Workflow 0 webhook URL
-
-STEP 14 — Activate the workflow.
-STEP 15 — Return webhook URL → add to .env.local as N8N_IMAGE_REPURPOSE_WEBHOOK_URL
-```
-
----
-
-### WORKFLOW 3 PROMPT — Publish
-
-```
-Using the n8n MCP server tools, create a new n8n workflow with the following exact specification. Name the workflow "Pulse - Publish".
-
-═══════════════════════════════════════
-STICKY NOTES
-═══════════════════════════════════════
-
-STICKY NOTE 1 — top of canvas, named "📋 WORKFLOW OVERVIEW":
-PULSE - PUBLISH (Workflow 3)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PURPOSE:
-Receives an approved post variant, routes to the correct platform,
-publishes it, then updates Google Sheet status via Workflow 0.
-
-TRIGGER: POST webhook — called by app route POST /api/publish
-
-CRITICAL — RESPONDS IMMEDIATELY before publishing.
-
-INPUTS: { postId, platform, text, imageUrl, hashtags, scheduledAt, sheetRowId }
-
-OPTION A ROUTER: One webhook, Switch by platform. All publish logic in one place.
-
-CREDENTIALS NEEDED:
-- "Twitter - Pulse" (Twitter OAuth2)
-- "Threads - Pulse" (HTTP Header Auth: Authorization: Bearer TOKEN)
-- "Instagram - Pulse" (HTTP Header Auth: Authorization: Bearer TOKEN)
-- "Facebook - Pulse" (HTTP Header Auth: Authorization: Bearer TOKEN)
-- N8N_SHEET_WEBHOOK_URL (workflow variable)
-- THREADS_USER_ID, INSTAGRAM_BUSINESS_ACCOUNT_ID, FACEBOOK_PAGE_ID (workflow variables)
-- SKOOL_ZAPIER_WEBHOOK_URL, SKOOL_PUBLISH_MODE (workflow variables)
-
-FLOW:
-Webhook → Respond 200 → Extract & Format Body → Switch by Platform →
-[Platform Publish Nodes] → Prepare Sheet Update → Update Sheet Status
-
-STICKY NOTE 2 — near Webhook, named "⚡ WEBHOOK TRIGGER":
-Path: pulse-publish, Method: POST
-Response Mode: Using Respond to Webhook Node
-COPY THIS URL → .env.local as N8N_PUBLISH_WEBHOOK_URL
-
-PAYLOAD:
-{ "postId":"post_001", "platform":"twitter", "text":"...", "imageUrl":"https://...",
-  "hashtags":["tag1","tag2"], "scheduledAt":null, "sheetRowId":"post_001" }
-
-STICKY NOTE 3 — near "Extract Body", named "📦 EXTRACT & FORMAT":
-Formats text with hashtags per platform rules:
-- Instagram: text + double newline + #hashtags
-- Twitter/Threads/Facebook: text + double newline + #hashtags
-- Skool: text only, NO hashtags ever
-
-STICKY NOTE 4 — near Switch node, named "🔀 PLATFORM ROUTER":
-Output 0 → twitter | Output 1 → threads | Output 2 → instagram
-Output 3 → facebook | Output 4 → skool
-
-STICKY NOTE 5 — near Twitter branch, named "🐦 TWITTER":
-API: POST https://api.twitter.com/2/tweets
-Auth: OAuth2, Credential: "Twitter - Pulse"
-Scopes: tweet.read, tweet.write, users.read
-Body: { "text": "post text with hashtags" }
-Setup: https://developer.twitter.com/en/portal
-Rate limits: Free=1500 tweets/month, Basic=3000/month
-
-STICKY NOTE 6 — near Threads branch, named "🧵 THREADS":
-TWO-STEP: Create container → Wait 2s → Publish container
-Step 1: POST https://graph.threads.net/v1.0/{THREADS_USER_ID}/threads
-        Body: { media_type:"TEXT"|"IMAGE", text:"...", image_url?:"..." }
-        Returns: { id: "container_id" }
-Step 2: POST https://graph.threads.net/v1.0/{THREADS_USER_ID}/threads_publish
-        Body: { creation_id: "container_id" }
-Get THREADS_USER_ID: GET https://graph.threads.net/v1.0/me?fields=id&access_token=TOKEN
-Token scopes: threads_basic, threads_content_publish
-
-STICKY NOTE 7 — near Instagram branch, named "📸 INSTAGRAM":
-TWO-STEP: Create container → Wait 2s → Publish container
-Requires Instagram Business/Creator account connected to Facebook Page.
-Step 1: POST https://graph.facebook.com/v18.0/{INSTAGRAM_BUSINESS_ACCOUNT_ID}/media
-        Body: { image_url:"public_url", caption:"text+hashtags" }
-        NOTE: imageUrl MUST be publicly accessible. fal.ai URLs are public — this works.
-        If imageUrl is null: skip publish, log error "Instagram requires an image"
-Step 2: POST https://graph.facebook.com/v18.0/{INSTAGRAM_BUSINESS_ACCOUNT_ID}/media_publish
-        Body: { creation_id: "container_id" }
-Rate limit: 25 posts/day per account
-
-STICKY NOTE 8 — near Facebook branch, named "👥 FACEBOOK":
-API: POST https://graph.facebook.com/v18.0/{FACEBOOK_PAGE_ID}/feed
-Auth: HTTP Header, Credential: "Facebook - Pulse" (Page Access Token)
-Body text only: { "message": "text+hashtags" }
-Body with image: { "message": "text+hashtags", "url": "imageUrl" }
-Get Page Token: GET /me/accounts → copy page access_token
-Token lasts indefinitely for pages you manage.
-
-STICKY NOTE 9 — near Skool branch, named "🎓 SKOOL":
-No official Skool API. Two options:
-OPTION A (default): Zapier webhook → Skool integration
-  Set SKOOL_ZAPIER_WEBHOOK_URL and SKOOL_PUBLISH_MODE="zapier"
-  POST to Zapier: { "text": "post content", "postId": "post_001" }
-OPTION B: Set SKOOL_PUBLISH_MODE="manual"
-  Content saved, status set to "manual_required"
-  User copy-pastes from dashboard
-NO HASHTAGS — skool posts never include hashtags (enforced in Extract Body node)
-
-STICKY NOTE 10 — near Sheet update nodes, named "💾 UPDATE SHEET":
-After each platform publish (success or failure), calls Workflow 0 UPDATE_STATUS.
-SUCCESS: { postId, platform, status:"published", publishedAt: ISO timestamp }
-FAILURE: { postId, platform, status:"failed", error: "error message" }
-App polls Sheet and reflects status in dashboard + calendar automatically.
-
-STICKY NOTE 11 — near error handler, named "❌ ERROR HANDLER":
-Catches fatal errors. Sets platform status to "failed" in Sheet.
-COMMON PLATFORM ERRORS:
-- Twitter 403 → app permissions not Read+Write
-- Twitter 429 → rate limit, wait 15 min
-- Threads 190 → token expired, refresh
-- Instagram #9007 → imageUrl not publicly accessible
-- Instagram #10 → account not Business/Creator type
-- Facebook 200 → missing pages_manage_posts scope
-- Skool Zapier 400 → check Zapier Zap is turned on
-
-═══════════════════════════════════════
-NODES
-═══════════════════════════════════════
-
-STEP 1 — Create workflow "Pulse - Publish"
-
-STEP 2 — Webhook node:
-- HTTP Method: POST, Path: pulse-publish
-- Response Mode: Using Respond to Webhook Node
-
-STEP 3 — Respond to Webhook "Respond 200 Immediately" (directly connected to Webhook):
-- Response Code: 200, Body: {"received":true}
-
-STEP 4 — Code node "Extract Body" (connected to Webhook, parallel branch):
-const body = $input.first().json.body;
-const hashtags = body.hashtags||[];
-const hashtagStr = hashtags.map(h=>'#'+h).join(' ');
-let textWithHashtags = body.text||'';
-if (body.platform==='skool') {
-  textWithHashtags = body.text;
-} else if (hashtagStr) {
-  textWithHashtags = body.text+'\n\n'+hashtagStr;
-}
-return [{ json: { postId:body.postId, platform:body.platform, text:body.text, textWithHashtags, imageUrl:body.imageUrl||null, hashtags, scheduledAt:body.scheduledAt||null, sheetRowId:body.sheetRowId||body.postId } }];
-
-STEP 5 — Switch node "Route by Platform":
-- Value: {{ $json.platform }}
-- Rule 1: equals "twitter" → output 0
-- Rule 2: equals "threads" → output 1
-- Rule 3: equals "instagram" → output 2
-- Rule 4: equals "facebook" → output 3
-- Rule 5: equals "skool" → output 4
-
-━━ TWITTER BRANCH (output 0) ━━
-
-STEP 6a — HTTP Request "Twitter Post Tweet":
-- Method: POST, URL: https://api.twitter.com/2/tweets
-- Auth: OAuth2, Credential: "Twitter - Pulse"
-- Body: { "text": "={{ $json.textWithHashtags }}" }
-- Continue on Fail: true
-
-STEP 6b — Code "Twitter Build Result":
-const r=$input.first().json; const inp=$('Extract Body').first().json;
-const success=!r.error&&r.data?.id;
-return [{ json: { postId:inp.postId, platform:'twitter', sheetRowId:inp.sheetRowId, success, publishedPostId:r.data?.id||null, error:r.error?JSON.stringify(r.error):(success?null:'No post ID from Twitter') } }];
-
-━━ THREADS BRANCH (output 1) ━━
-
-STEP 7a — HTTP Request "Threads Create Container":
-- Method: POST, URL: https://graph.threads.net/v1.0/={{ $vars.THREADS_USER_ID }}/threads
-- Auth: Header Auth, Credential: "Threads - Pulse" (Authorization: Bearer TOKEN)
-- Body (expression): ={ "media_type":$json.imageUrl?"IMAGE":"TEXT", "text":$json.textWithHashtags, ...($json.imageUrl?{"image_url":$json.imageUrl}:{}) }
-- Continue on Fail: true
-
-STEP 7b — Wait node "Wait 2s Before Threads Publish": 2 seconds
-
-STEP 7c — HTTP Request "Threads Publish Container":
-- Method: POST, URL: https://graph.threads.net/v1.0/={{ $vars.THREADS_USER_ID }}/threads_publish
-- Auth: Header Auth, Credential: "Threads - Pulse"
-- Body: { "creation_id": "={{ $('Threads Create Container').item.json.id }}" }
-- Continue on Fail: true
-
-STEP 7d — Code "Threads Build Result":
-const r=$input.first().json; const inp=$('Extract Body').first().json;
-const success=!r.error&&r.id;
-return [{ json: { postId:inp.postId, platform:'threads', sheetRowId:inp.sheetRowId, success, publishedPostId:r.id||null, error:r.error?JSON.stringify(r.error):(success?null:'No ID from Threads') } }];
-
-━━ INSTAGRAM BRANCH (output 2) ━━
-
-STEP 8a — Code "Instagram Check Image":
-const {imageUrl,postId,sheetRowId}=$input.first().json;
-if(!imageUrl) return [{ json:{postId,platform:'instagram',sheetRowId,success:false,publishedPostId:null,error:'Instagram requires an image. Generate one first.'} }];
-return [{ json:$input.first().json }];
-
-STEP 8b — HTTP Request "Instagram Create Container":
-- Method: POST, URL: https://graph.facebook.com/v18.0/={{ $vars.INSTAGRAM_BUSINESS_ACCOUNT_ID }}/media
-- Auth: Header Auth, Credential: "Instagram - Pulse"
-- Body: { "image_url":"={{ $json.imageUrl }}", "caption":"={{ $json.textWithHashtags }}" }
-- Continue on Fail: true
-
-STEP 8c — Wait "Wait 2s Before IG Publish": 2 seconds
-
-STEP 8d — HTTP Request "Instagram Publish Container":
-- Method: POST, URL: https://graph.facebook.com/v18.0/={{ $vars.INSTAGRAM_BUSINESS_ACCOUNT_ID }}/media_publish
-- Auth: Header Auth, Credential: "Instagram - Pulse"
-- Body: { "creation_id":"={{ $('Instagram Create Container').item.json.id }}" }
-- Continue on Fail: true
-
-STEP 8e — Code "Instagram Build Result":
-const r=$input.first().json; const inp=$('Extract Body').first().json;
-const success=!r.error&&r.id;
-return [{ json:{postId:inp.postId,platform:'instagram',sheetRowId:inp.sheetRowId,success,publishedPostId:r.id||null,error:r.error?JSON.stringify(r.error):(success?null:'No ID from Instagram')} }];
-
-━━ FACEBOOK BRANCH (output 3) ━━
-
-STEP 9a — HTTP Request "Facebook Post to Page":
-- Method: POST, URL: https://graph.facebook.com/v18.0/={{ $vars.FACEBOOK_PAGE_ID }}/feed
-- Auth: Header Auth, Credential: "Facebook - Pulse"
-- Body (expression): ={ "message":$json.textWithHashtags, ...($json.imageUrl?{"url":$json.imageUrl}:{}) }
-- Continue on Fail: true
-
-STEP 9b — Code "Facebook Build Result":
-const r=$input.first().json; const inp=$('Extract Body').first().json;
-const success=!r.error&&r.id;
-return [{ json:{postId:inp.postId,platform:'facebook',sheetRowId:inp.sheetRowId,success,publishedPostId:r.id||null,error:r.error?JSON.stringify(r.error):(success?null:'No ID from Facebook')} }];
-
-━━ SKOOL BRANCH (output 4) ━━
-
-STEP 10a — Code "Skool Check Method":
-const skoolMode=$vars.SKOOL_PUBLISH_MODE||'zapier';
-const zapierUrl=$vars.SKOOL_ZAPIER_WEBHOOK_URL||null;
-return [{ json:{...$input.first().json, skoolMode, zapierUrl, useZapier:skoolMode==='zapier'&&!!zapierUrl} }];
-
-STEP 10b — HTTP Request "Skool Post via Zapier":
-- Method: POST, URL: ={{ $json.zapierUrl||'https://hooks.zapier.com/placeholder' }}
-- Body: { "text":"={{ $json.text }}", "postId":"={{ $json.postId }}" }
-- Continue on Fail: true
-
-STEP 10c — Code "Skool Build Result":
-const r=$input.first().json; const inp=$('Extract Body').first().json;
-const useZapier=$('Skool Check Method').item.json.useZapier;
-const success=useZapier&&(r.status==='success'||r.attempt===1);
-const status=!useZapier?'manual_required':success?'published':'failed';
-const error=!useZapier?'Skool Zapier webhook not configured. Post manually.':success?null:JSON.stringify(r);
-return [{ json:{postId:inp.postId,platform:'skool',sheetRowId:inp.sheetRowId,success,publishedPostId:null,status,error} }];
-
-━━ SHARED SHEET UPDATE (receives from ALL 5 platform result nodes) ━━
-
-STEP 11 — Code "Prepare Sheet Update" (merge all 5 result nodes as inputs):
-const {postId,platform,success,error,status}=$input.first().json;
-const finalStatus=status||(success?'published':'failed');
-const payload={postId,platform,status:finalStatus};
-if(success) payload.publishedAt=new Date().toISOString();
-if(error) payload.error=error;
-return [{ json:{action:'UPDATE_STATUS',payload} }];
-
-STEP 12 — HTTP Request "Update Sheet Status":
-- Method: POST, URL: ={{ $vars.N8N_SHEET_WEBHOOK_URL }}, Timeout: 15000ms
-- Body: { "action":"={{ $json.action }}", "payload":"={{ $json.payload }}" }
-- Continue on Fail: true
-
-━━ ERROR HANDLER ━━
-
-STEP 13 — Error Trigger "On Workflow Error" → Code "Build Fatal Error Payload":
-const err=$input.first().json; const body=$('Extract Body').first()?.json||{};
-return [{ json:{postId:body.postId||'unknown',platform:body.platform||'unknown',sheetRowId:body.sheetRowId||'unknown',errorMessage:err.message||'Unknown fatal error'} }];
-
-→ HTTP Request "Fatal Error Update Sheet":
-{ "action":"UPDATE_STATUS", "payload":{ "postId":"={{ $json.postId }}", "platform":"={{ $json.platform }}", "status":"failed", "error":"={{ $json.errorMessage }}" } }
-URL: ={{ $vars.N8N_SHEET_WEBHOOK_URL }}, Continue on Fail: true
-
-STEP 14 — WORKFLOW VARIABLES:
-- N8N_SHEET_WEBHOOK_URL: Workflow 0 webhook URL
-- THREADS_USER_ID: your Threads user ID
-- INSTAGRAM_BUSINESS_ACCOUNT_ID: your Instagram Business Account ID
-- FACEBOOK_PAGE_ID: your Facebook Page ID
-- SKOOL_ZAPIER_WEBHOOK_URL: your Zapier webhook URL (or leave blank)
-- SKOOL_PUBLISH_MODE: "zapier" or "manual"
-
-STEP 15 — CREDENTIALS TO CREATE:
-- "Twitter - Pulse" → Twitter OAuth2 API (scopes: tweet.read, tweet.write, users.read)
-- "Threads - Pulse" → HTTP Header Auth (Header: Authorization, Value: Bearer TOKEN)
-- "Instagram - Pulse" → HTTP Header Auth (Header: Authorization, Value: Bearer TOKEN)
-- "Facebook - Pulse" → HTTP Header Auth (Header: Authorization, Value: Bearer PAGE_TOKEN)
-
-STEP 16 — Activate the workflow.
-STEP 17 — Return webhook URL → add to .env.local as N8N_PUBLISH_WEBHOOK_URL
-```
-
 ---
-
-### Step 3 — Copy webhook URLs to .env.local
 
-After all 4 workflows are created and activated, your `.env.local` should contain:
+## 1. Project Identity
 
-```env
-N8N_SHEET_WEBHOOK_URL=https://your-n8n.com/webhook/pulse-sheet
-N8N_CONTENT_REPURPOSE_WEBHOOK_URL=https://your-n8n.com/webhook/pulse-content-repurpose
-N8N_IMAGE_REPURPOSE_WEBHOOK_URL=https://your-n8n.com/webhook/pulse-image-repurpose
-N8N_PUBLISH_WEBHOOK_URL=https://your-n8n.com/webhook/pulse-publish
-```
-
-### Step 4 — Add credentials inside n8n
-
-After workflows are created, add these credentials in n8n (Settings → Credentials):
-- **Google Sheets service account** — "Google Sheets - Pulse Repurpose" — share the spreadsheet with the service account email (Editor access)
-- **Anthropic API key** — "Anthropic - Pulse" — Header Auth, header x-api-key
-- **fal.ai API key** — "fal.ai - Pulse" — Generic credential with field apiKey
-- **Twitter OAuth2** — "Twitter - Pulse" — scopes: tweet.read, tweet.write, users.read
-- **Threads Bearer Token** — "Threads - Pulse" — HTTP Header Auth
-- **Instagram Page Token** — "Instagram - Pulse" — HTTP Header Auth
-- **Facebook Page Token** — "Facebook - Pulse" — HTTP Header Auth
-- **Skool via Zapier** — no n8n credential needed, just set SKOOL_ZAPIER_WEBHOOK_URL variable
-
-### Step 5 — Verify with the test endpoint
+**Name:** Pulse Repurpose
+**Purpose:** A personal content operating system (AOS) for a single creator. It takes LinkedIn posts and repurposes them into platform-native variants for Twitter/X, Threads, Instagram, Facebook, and Skool. It is not a scheduler. It is not a formatter. It is a learning creative partner — voice-first, not template-first.
 
+**SOUL.md** (create this file at root):
 ```
-POST http://localhost:3000/api/test-webhooks
-```
-
-This fires test payloads to all 4 webhook URLs and reports which responded correctly. Fix any failures before going live.
-
-
-
-## Agentic Operating System (AOS)
-
-Pulse Repurpose is not just a CRUD app — it is a **living, learning agent** built on the Agentic Operating System ideology. The app has an identity, accumulates memory across sessions, learns from every repurposing decision, and runs autonomous scheduled operations. All intelligence is stored in plain Markdown files that the app reads, writes, and reasons over.
-
-The AOS is made up of six layers: **Soul** (identity) → **Heartbeat** (orientation) → **User** (who it serves) → **Memory** (working context) → **Learnings** (accumulated intelligence) → **Skills** (executable runbooks).
-
----
-
-### SOUL.md — App identity and operating principles
-
-Located at the project root. Written once, rarely changed. This file defines what the app *is* and how it *thinks*. Every agent operation (cron, repurpose skill, memory updates) reads SOUL.md first to orient itself before acting.
-
-Generate this file with the following content at project creation time:
-
-```markdown
 # SOUL.md — Pulse Repurpose
 
 ## Identity
@@ -3936,11 +21,11 @@ My purpose is to amplify one voice across every platform without diluting it.
 I am not a scheduler. I am not a formatter. I am a learning creative partner.
 
 ## Core values
-- **Voice fidelity**: Every repurposed piece must sound like the creator, not like AI.
-- **Platform intelligence**: Each platform has its own culture. I adapt, never copy-paste.
-- **Learning over rules**: I improve from every approval, rejection, and edit. Rules are defaults, patterns are truth.
-- **Minimal friction**: The creator should spend time creating, not managing. I automate what is repetitive, surface what needs judgment.
-- **Honest memory**: I only remember what I have actually observed. I do not invent patterns.
+- Voice fidelity: Every repurposed piece must sound like the creator, not like AI.
+- Platform intelligence: Each platform has its own culture. I adapt, never copy-paste.
+- Learning over rules: I improve from every approval, rejection, and edit. Rules are defaults, patterns are truth.
+- Minimal friction: The creator should spend time creating, not managing. I automate what is repetitive, surface what needs judgment.
+- Honest memory: I only remember what I have actually observed. I do not invent patterns.
 
 ## Operating principles
 1. Always read Heartbeat.md before starting any operation to orient to current system state.
@@ -3962,1208 +47,314 @@ I am not a scheduler. I am not a formatter. I am a learning creative partner.
 
 ---
 
-### Heartbeat.md — Master orientation file
-
-Located at the project root. Auto-updated by the cron skill after every run. Any agent operation — whether triggered by the user or by schedule — reads this file first to understand current system state before doing anything.
-
-Generate this file at project creation with placeholder content. The cron skill overwrites it on each run.
-
-```markdown
-# Heartbeat.md — Pulse Repurpose System State
-
-_Last updated: [auto-filled by cron]_
-
-## System status
-- App: running
-- n8n workflows: [status filled by cron — all active / degraded / unknown]
-- Last cron run: [ISO timestamp]
-- Next cron run: [ISO timestamp]
-
-## Content pipeline status
-- New LinkedIn posts since last run: [N]
-- Posts repurposed today: [N]
-- Posts pending approval: [N]
-- Posts scheduled this week: [N]
-- Posts published this week: [N]
-
-## Platform health
-- Twitter: [last published / gap warning if >3 days]
-- Threads: [last published / gap warning]
-- Instagram: [last published / gap warning]
-- Facebook: [last published / gap warning]
-- Skool: [last published / gap warning]
-
-## Active learning signals
-- [auto-filled: e.g. "Twitter hooks with questions outperforming statements by 2x this month"]
-- [auto-filled: e.g. "Instagram posts under 150 words getting approved faster"]
-
-## Memory pointers
-- USER.md: [path]
-- MEMORY.md: [path]
-- learnings.md: [path]
-- Today's daily log: memory/daily/[date].md
-
-## Flags requiring attention
-- [auto-filled: e.g. "3 posts pending approval for >48h"]
-- [auto-filled: e.g. "No Skool posts in 7 days"]
-- [auto-filled: e.g. "Threads image generation failed for post_042"]
-```
-
----
-
-### memory/USER.md — User intelligence file
-
-Written by the app after observing the user's behavior across sessions. Updated by the cron skill when new patterns emerge. This is the app's understanding of the human it serves — richer and more behavioral than the brand voice config form.
-
-Generate with this initial structure, populated progressively by the learning system:
-
-```markdown
-# USER.md — Creator Profile
-
-_Last updated: [auto-filled]_
-
-## Identity
-- Name: [filled from settings or first use]
-- Primary platform: LinkedIn
-- Content creation style: [observed — e.g. "writes long-form, then edits down"]
-- Posting frequency: [observed — e.g. "3-4x per week on LinkedIn"]
-
-## Voice fingerprint
-_Observed from approved posts and manual edits — more reliable than the settings form._
-- Sentence length: [e.g. "short, rarely over 20 words"]
-- Opening style: [e.g. "starts with a direct statement or provocative question"]
-- Closing style: [e.g. "ends with a call to think, rarely a call to action"]
-- Recurring phrases: [e.g. "the truth is...", "most people don't realize..."]
-- Emotional register: [e.g. "direct but not harsh, confident but not arrogant"]
-
-## Platform behavior
-- Platforms regularly approved: [filled by learning system]
-- Platforms frequently edited before approval: [filled by learning system]
-- Platforms often skipped: [filled by learning system]
-
-## Approval patterns
-_What gets approved fast vs what gets reworked._
-- Fast approvals: [e.g. "Twitter threads under 5 tweets", "Skool posts reframed as questions"]
-- Frequently edited: [e.g. "Instagram captions — user shortens them every time"]
-- Frequently rejected: [e.g. "Facebook posts with bullet points"]
-
-## Content preferences
-- Best performing topics: [filled from performance data]
-- Topics that underperform: [filled from performance data]
-- Preferred hashtag style: [e.g. "3-5 specific hashtags, avoids generic ones like #entrepreneurship"]
-```
-
----
-
-### memory/MEMORY.md — Rolling working memory
-
-This is the app's short-term working memory. It holds the current session context, recent actions, and anything relevant for the next operation. It is a rolling window — older entries are summarized and moved to the daily log when they exceed 500 lines.
-
-The cron skill writes to this file. The repurpose skill reads from it. The API routes append to it after significant events.
-
-```markdown
-# MEMORY.md — Working Memory
-
-_Rolling window — entries older than 7 days are archived to memory/daily/_
-
-## Current session context
-- Last repurposed post: [post_id, timestamp]
-- Last platform published to: [platform, timestamp]
-- Pending approvals: [list of post_ids and platforms]
-
-## Recent events
-[append-only log, newest first]
-- [timestamp] Repurposed post_047 for all 5 platforms. Twitter auto-approved. Instagram edited (shortened caption).
-- [timestamp] Cron run completed. 2 new LinkedIn posts found. Triggered repurpose for both.
-- [timestamp] Facebook post for post_044 failed to publish — API token expired.
-- [timestamp] User regenerated Twitter for post_043 — original was too formal.
-
-## Open flags
-- post_044 Facebook publish failed — needs manual token refresh
-- post_046 pending approval for 3 days — no action taken
-
-## Last learning update
-- [timestamp] Updated learnings.md with Instagram caption length pattern
-```
-
----
-
-### memory/learnings.md — Accumulated intelligence
-
-The most important memory file. This is what makes the app smarter over time. Every observation about what works and what doesn't is written here. The repurpose skill injects the relevant section of this file into every Claude prompt — so future repurposing is informed by past results.
-
-Structured by category so relevant sections can be extracted efficiently.
-
-```markdown
-# learnings.md — Accumulated Intelligence
-
-_Append-only. Never delete entries — mark as superseded if a learning is overridden._
-_Last updated: [auto-filled]_
-
-## Approval patterns
-_Posts that get approved without edits vs posts that get reworked._
-
-### Twitter
-- [date] Threads of 3-5 tweets get approved faster than single long tweets. Confidence: medium (8 observations).
-- [date] Tweets starting with a number ("3 things...", "After 5 years...") consistently approved without edits. Confidence: high (14 observations).
-- [date] Tweets ending with a question get edited to remove the question ~60% of the time. User prefers statements. Confidence: medium (9 observations).
-
-### Instagram
-- [date] Captions over 200 words get shortened by user before approval every time. Target under 150 words. Confidence: high (11 observations).
-- [date] Line breaks every 1-2 sentences approved as-is. Dense paragraphs always edited. Confidence: high (13 observations).
-
-### Facebook
-- [date] Bullet point format rejected 4/4 times. User rewrites to prose. Never use bullets. Confidence: high.
-- [date] Posts ending with a direct question ("What do you think?") get published without edits. Confidence: medium (6 observations).
-
-### Threads
-- [date] Very short posts (under 100 words) get approved immediately. Longer ones get trimmed. Confidence: medium (7 observations).
-
-### Skool
-- [date] Posts reframed as "I want to share a lesson..." outperform direct rephrases. Confidence: medium (5 observations).
-
-## Content performance
-_Engagement data from LinkedIn scraping — which posts drive the most repurposing priority._
-
-- [date] Posts about personal failures/lessons outperform tactical how-tos by ~40% on LinkedIn. Prioritize repurposing these first.
-- [date] Posts with specific numbers in the headline (not vague) get more shares.
-- [date] Short posts (under 300 words on LinkedIn) generate more comments than long ones.
-
-## Hashtag intelligence
-_Which hashtags have driven engagement vs which are noise._
-
-- [date] #buildinpublic on Twitter consistently outperforms broader tags like #entrepreneur. Keep using.
-- [date] Instagram: 8-12 hashtags outperforms 3-5 or 15+. Sweet spot identified.
-- [date] #solopreneur on Threads underperforming — low engagement. Reduce usage.
-
-## Platform-specific tone adjustments
-_Tone corrections the user has made that reveal platform preferences._
-
-- [date] Threads: user removes formal language ("it is important to note") every time. Keep very casual.
-- [date] Twitter: user adds more punch to opening lines — the AI version is too gentle. Start more boldly.
-- [date] Instagram: user adds personal "I" statements — AI version too general. First-person always.
-
-## Superseded learnings
-_Old learnings that have been replaced by newer observations._
-- [superseded by entry above] ~~Instagram: 15 hashtags optimal~~ → updated to 8-12 based on newer data.
-```
-
----
-
-### memory/daily/YYYY-MM-DD.md — Daily memory snapshots
-
-One file per day, auto-generated by the cron skill at the end of each run. These are permanent records — never deleted. They serve as an audit trail of what the app did each day.
-
-```markdown
-# Daily Memory — [DATE]
-
-## Cron run summary
-- Started: [timestamp]
-- Completed: [timestamp]
-- Duration: [N seconds]
-
-## New LinkedIn posts found
-- post_051: "The biggest mistake I made scaling my first product..." [snippet]
-- post_052: "3 tools I use every morning before opening email" [snippet]
-
-## Repurpose actions taken
-- post_051: triggered content repurpose webhook ✓, image repurpose webhook ✓
-- post_052: triggered content repurpose webhook ✓, image repurpose webhook pending (fal.ai timeout)
-
-## Platform gap warnings surfaced
-- Instagram: 4 days since last post — surfaced in Heartbeat.md
-- Skool: 6 days since last post — surfaced in Heartbeat.md
-
-## Calendar fill suggestions generated
-- Suggested scheduling post_049 (approved, unscheduled) for Instagram on [date] at 09:00
-- Suggested scheduling post_050 (approved, unscheduled) for Twitter on [date] at 14:00
-
-## Learning updates
-- Added 1 new approval pattern observation (Twitter)
-- Updated USER.md posting frequency (now 4x/week LinkedIn)
-
-## Flags raised
-- post_052 image generation failed — fal.ai timeout. Added to MEMORY.md open flags.
-
-## Heartbeat.md updated: ✓
-```
-
----
-
-### skills/repurpose.md — Repurpose skill
-
-A skill is a plain-Markdown runbook that describes a complete operation end-to-end. It is not code — it is a specification that the app's agent layer reads and executes step by step. Think of it as a recipe the AI follows when performing the repurpose operation.
-
-The app exposes a `/api/skills/repurpose` route that reads this file and executes each step, injecting memory context at the appropriate points.
-
-```markdown
-# Skill: Repurpose
-
-## Purpose
-Transform a LinkedIn post into platform-optimized variants for Twitter, Threads, Instagram,
-Facebook, and Skool — using accumulated learnings to produce output that matches the creator's
-voice and gets approved without editing.
-
-## Pre-conditions
-- Post exists in the Sheet with linkedinText populated
-- SOUL.md is readable
-- learnings.md is readable
-- USER.md is readable
-
-## Memory injection
-Before generating any content, load and inject the following into the Claude system prompt:
-1. Full contents of SOUL.md (operating principles section)
-2. Full contents of memory/learnings.md (all sections relevant to the target platforms)
-3. USER.md voice fingerprint and approval patterns sections
-4. Brand voice profile from config/brand-voice.json
-5. Platform rules from lib/platform-rules.ts
-
-Priority order when conflicts exist: learnings.md > USER.md > brand-voice.json > platform-rules.ts
-Learnings always win because they are observed truth. Rules are defaults.
-
-## Execution steps
-
-### Step 1 — Pre-flight
-- Read Heartbeat.md to check system state
-- Confirm n8n Sheet webhook is reachable (GET_POST_BY_ID with the target postId)
-- Confirm N8N_CONTENT_REPURPOSE_WEBHOOK_URL is set
-- Log start to MEMORY.md: "[timestamp] Starting repurpose for [postId]"
-
-### Step 2 — Build enriched system prompt
-Construct the Claude system prompt by concatenating:
-```
-[SOUL.md operating principles]
-
-[learnings.md — full content]
-
-[USER.md — voice fingerprint + approval patterns]
-
-[brand voice profile JSON as readable text]
-
-CRITICAL INSTRUCTIONS FROM LEARNINGS:
-For Twitter: [extract Twitter-specific approval patterns from learnings.md]
-For Instagram: [extract Instagram-specific patterns]
-[...per platform]
-
-Your goal is to generate repurposed content that will be approved WITHOUT edits.
-Study the approval patterns above carefully — they represent real observations of what this
-creator approves and what they change. Optimize for zero-edit approval.
-```
-
-### Step 3 — Fire content repurpose webhook
-- POST to N8N_CONTENT_REPURPOSE_WEBHOOK_URL with enriched payload
-- Include the full system prompt in the payload so n8n passes it directly to Claude
-- Set all platform statuses to "generating_text" via Sheet webhook
-
-### Step 4 — Wait for callback + poll
-- Poll GET_POST_BY_ID every 3 seconds
-- Timeout after 5 minutes with error log
-
-### Step 5 — Fire image repurpose webhook
-- Call generateImagePrompts (Claude direct) using learnings context
-- Include any visual style observations from learnings.md in image prompts
-- POST to N8N_IMAGE_REPURPOSE_WEBHOOK_URL
-
-### Step 6 — Post-generation learning capture
-After variants are written to Sheet:
-- Append to MEMORY.md: "[timestamp] Repurpose complete for [postId]. Platforms: [list]. Awaiting approval."
-- Note any generation anomalies (timeouts, retries, unusual outputs)
-
-### Step 7 — Approval monitoring (async)
-The skill registers a watch on the post. When the user approves or edits a variant:
-- If approved without edits: append observation to learnings.md — "[date] [platform]: [brief description of what was approved as-is]. Confidence+1."
-- If edited before approval: append observation to learnings.md — "[date] [platform]: user changed [what]. AI had [what]. Learning: [inferred pattern]."
-- If rejected: append — "[date] [platform]: rejected. Reason if visible: [reason]."
-- Update USER.md approval patterns section
-
-### Step 8 — Update Heartbeat.md
-Append post to "Content pipeline status" section.
-
-## Error handling
-- n8n webhook timeout: log to MEMORY.md open flags, surface in Heartbeat.md
-- Claude API error: retry once with simplified prompt (drop learnings context if too long)
-- Image generation failure: log to daily memory, proceed without blocking text approval
-
-## Success criteria
-A repurpose run is successful when:
-- All 5 platform text variants are written to the Sheet
-- At least 3/5 image variants are generated
-- MEMORY.md is updated
-- Heartbeat.md reflects the new pipeline status
-```
-
----
-
-### skills/cron.md — Cron skill
-
-The cron skill is the app's autonomous heartbeat. It runs on a schedule and performs all automated operations. It is triggered by a Next.js cron route (`/api/cron`) which is called by an external scheduler (Vercel Cron, system cron, or n8n Schedule trigger).
-
-```markdown
-# Skill: Cron
-
-## Purpose
-Run all scheduled operations for Pulse Repurpose. Maintain system health, trigger repurposing
-for new posts, update memory, surface gaps, and keep Heartbeat.md current.
-
-## Schedule
-Default: daily at 07:00 local time.
-Configurable via CRON_SCHEDULE env var (cron expression).
-
-## Pre-flight checklist
-Before doing anything else:
-1. Read Heartbeat.md — check last run timestamp. If last run was less than 1 hour ago, abort (duplicate run guard).
-2. Verify all 4 n8n webhook URLs are reachable (fire OPTIONS or HEAD requests).
-3. Log run start to today's daily memory file: memory/daily/[today].md
-
-## Operations (run in this order)
-
-### Operation 1 — Ingest new LinkedIn posts
-1. Call GET_ALL_POSTS via Sheet webhook with filter: postedAt > lastCronRunTimestamp
-2. For each new post found:
-   a. Check if all platform statuses are "pending"
-   b. If yes: execute Repurpose skill (Step 1-6) for this post
-   c. Log to daily memory: "New post [postId] found and repurpose triggered"
-3. Update Heartbeat.md: "New LinkedIn posts since last run: [N]"
-
-### Operation 2 — Performance scraping
-1. Trigger the existing n8n Apify scraper (call its webhook or the existing n8n workflow) to pull LinkedIn engagement data for posts from the last 48 hours
-2. For each post with engagement data:
-   a. Compare engagement (likes, comments, shares) against previous posts on same topic
-   b. If a post is in the top 25% for engagement: flag it in MEMORY.md as "high performer"
-   c. Append to learnings.md: "[date] Content performance: [postId] — [topic summary] performed [X]% above average on LinkedIn. Prioritize repurposing similar content."
-3. Update USER.md "best performing topics" section with any new patterns
-
-### Operation 3 — Learning system update
-1. Call GET_ALL_POSTS with filter: status changes in last 24 hours (approved, edited, rejected)
-2. For each post with recent status changes:
-   a. Compare current variant text against the last AI-generated text (detect if user edited)
-   b. If edited: extract the diff, infer the pattern, append to learnings.md
-   c. If approved without edits: increment confidence on matching learnings.md entry
-   d. If multiple posts show same edit pattern: promote to high-confidence learning
-3. Trim learnings.md if over 2000 lines: summarize oldest low-confidence entries into a paragraph, replace them
-
-### Operation 4 — Gap detection
-1. For each platform, find the most recent published post date (GET_ALL_POSTS, filter status=published, sort by publishedAt desc)
-2. Calculate days since last publish per platform
-3. For any platform with gap > 3 days:
-   a. Check if there are approved+unscheduled posts that could fill the gap
-   b. If yes: generate a calendar fill suggestion and append to Heartbeat.md flags
-   c. If no: append to Heartbeat.md flags — "No approved content ready for [platform] — consider repurposing a post"
-4. Run topic pillar gap detection:
-   a. Scan last 10 published posts per platform for topic pillar keywords
-   b. If any pillar missing from last 10 posts: flag in Heartbeat.md
-
-### Operation 5 — Calendar fill suggestions
-1. Find all approved+unscheduled variants across all posts (GET_ALL_POSTS filter: status=approved, scheduledAt=null)
-2. Find gaps in the next 7 days calendar (slots with no scheduled posts per platform)
-3. For each gap:
-   a. Match an approved unscheduled variant to the gap (prioritize high-performing content topics)
-   b. Generate a suggested schedule time (optimal posting times per platform: Twitter 9am/3pm, Instagram 11am/7pm, Facebook 1pm, Threads 10am, Skool 8am)
-   c. Write suggestion to MEMORY.md — not auto-scheduled, user must confirm
-4. Surface suggestions in Heartbeat.md "Flags requiring attention" section
-
-### Operation 6 — Daily memory snapshot
-1. Compile the daily memory file for today (memory/daily/[date].md) with:
-   - All operations performed and their outcomes
-   - New posts found and processed
-   - Learning updates made
-   - Gaps and suggestions surfaced
-   - Any errors or flags
-2. Summarize MEMORY.md — move events older than 7 days into the corresponding daily file, keep MEMORY.md focused on the last 7 days
-
-### Operation 7 — Heartbeat.md update (final)
-Rewrite Heartbeat.md with fresh data from all operations above:
-- Update "Last cron run" timestamp
-- Update all content pipeline counts
-- Update platform health section
-- Update active learning signals (top 3 most recent high-confidence learnings)
-- Update flags requiring attention
-- Update memory pointers
-
-### Operation 8 — Completion log
-- Append final summary to today's daily memory file
-- Log to MEMORY.md: "[timestamp] Cron run completed. Duration: [N]s. Posts processed: [N]. Learnings updated: [N]."
-
-## Error handling
-- If any single operation fails, log the error and continue to next operation. Never abort the full cron run for a single failure.
-- If Sheet webhook is unreachable: skip Operations 1, 2, 3, 4, 5. Update Heartbeat.md with "Sheet webhook unreachable — data operations skipped."
-- All errors are written to today's daily memory file and flagged in Heartbeat.md.
-
-## Success criteria
-A cron run is successful when:
-- Heartbeat.md has been updated with current timestamp
-- Daily memory file exists for today
-- MEMORY.md is within rolling window (not over 500 lines)
-- No critical flags are silently dropped
-```
-
----
-
-### API routes for AOS
-
-Add these routes to the app:
-
-**GET /api/heartbeat**
-- Read and return Heartbeat.md as JSON (parse the markdown sections into a structured object)
-- Used by the dashboard to show system status
-
-**POST /api/cron**
-- Protected by `CRON_SECRET` env var (check `Authorization: Bearer [CRON_SECRET]` header)
-- Reads `skills/cron.md` and executes each operation in sequence
-- Returns a run summary JSON
-- Can also be triggered manually from the dashboard with a "Run cron now" button (admin section)
-
-**POST /api/skills/repurpose**
-- Reads `skills/repurpose.md` and executes the repurpose skill for a given postId
-- Replaces the simpler `POST /api/trigger/repurpose` — this version is memory-aware and learning-injected
-- Request body: `{ postId: string, platforms?: Platform[] }`
-
-**GET /api/memory**
-- Returns current MEMORY.md and learnings.md contents as JSON
-- Used by the settings page to show a "System memory" panel
-
-**POST /api/memory/update**
-- Append a manual note to MEMORY.md
-- Used for the "Add context" feature in the UI
-
----
-
-### Dashboard additions for AOS
-
-Add a **System** section to the dashboard (collapsible panel at the top):
-
-- **Heartbeat status bar**: Shows last cron run time, pipeline counts, and any active flags as dismissible chips
-- **Active learnings panel**: Shows the 5 most recent high-confidence entries from learnings.md — gives the user visibility into what the app has learned
-- **Memory panel**: Collapsible — shows MEMORY.md current open flags and recent events
-- **"Run cron now" button**: Triggers `POST /api/cron` manually with confirmation dialog
-- **Platform gap warnings**: Surfaced from Heartbeat.md, each with a "Repurpose a post" CTA
-
----
-
-### Environment variables — AOS additions
-
-Add to `.env.local`:
-
-```env
-# AOS — Cron
-CRON_SECRET=                       # Bearer token to protect /api/cron from unauthorized calls
-CRON_SCHEDULE=0 7 * * *            # Default: daily at 07:00 (standard cron expression)
-```
-
----
-
-### Implementation order additions
-
-Add these steps after step 14 (Calendar page) and before step 15 (Polish):
-
-```
-14b. AOS file generation — create SOUL.md, Heartbeat.md, memory/USER.md, memory/MEMORY.md,
-     memory/learnings.md, skills/repurpose.md, skills/cron.md at project init with correct
-     starter content as specified above. These files must exist before any agent operation runs.
-
-14c. Memory-aware repurpose skill — upgrade POST /api/skills/repurpose to read and inject
-     learnings.md + USER.md into the content repurpose webhook payload
-
-14d. Learning capture — add approval/edit event listeners that append to learnings.md
-     when a user approves, edits, or rejects a platform variant
-
-14e. Cron skill implementation — POST /api/cron executing skills/cron.md step by step
-
-14f. Heartbeat API + dashboard system panel
-
-14g. AOS memory panel in settings page (view/edit MEMORY.md and learnings.md)
-```
-
-
----
-
-## Implementation order
-
-Build in this sequence to get a working app fastest:
-
-1. Project setup, types, and env configuration
-2. n8n Sheet webhook integration (`lib/n8n-sheet.ts` + GET /api/posts + PATCH /api/posts/[id])
-   — This is step 2 because every other feature depends on data loading. Verify the Sheet workflow is live in n8n before proceeding.
-2b. Content store setup (`lib/content-store.ts` + `content/` directory + install `gray-matter`) — set up early since callbacks and the repurpose skill both write files
-2c. Auto-documentation system (`lib/docs-sync.ts` + `CHANGELOG.md` + `POST /api/docs/sync` + `GET /api/docs/status`) — set up before any further features so every subsequent step auto-documents itself
-3. Brand voice config system (`lib/brand-voice.ts` + Settings page — Brand Voice tab)
-4. Platform rules (`lib/platform-rules.ts`)
-5. n8n async webhook layer (`lib/n8n.ts` — content repurpose, image repurpose, publish fire functions)
-6. Trigger routes (`POST /api/trigger/repurpose` + `POST /api/trigger/images`)
-7. Callback routes (`POST /api/callback/repurpose` + `POST /api/callback/images`) — both write content files via `lib/content-store.ts`
-8. Dashboard page (table + filters + slide-over)
-9. Repurpose page — skeleton + polling + platform cards (no chat yet)
-10. Publish flow (`POST /api/publish` + approve buttons)
-11. Anthropic direct calls (`lib/anthropic.ts` — chat + image prompts + hashtags)
-12. AI chat sidebar on repurpose page
-13. Hashtag bank system + Settings Hashtag Bank tab + `/api/hashtags`
-14. Calendar page (FullCalendar + gap detection)
-14b. AOS file generation — create SOUL.md, Heartbeat.md, memory/USER.md, memory/MEMORY.md, memory/learnings.md, skills/repurpose.md, skills/cron.md at project init with correct starter content
-14c. Platform skill files — generate all 10 skill files (5 content + 5 image) in skills/platforms/ with correct starter templates as specified in the platform skills section
-14c-i. POST /api/skills/platform-prompt route — executes any platform skill and returns structured ContentPromptOutput or ImagePromptOutput. Test each skill file end-to-end.
-14c-ii. Memory-aware repurpose skill — upgrade POST /api/skills/repurpose to call all platform skills in parallel before firing n8n webhooks. Replace old brandVoice/imagePrompts payloads with contentPrompts/imagePayloads maps.
-14c-iii. Update n8n Workflow 1 to receive contentPrompts and pass systemPrompt+userPrompt directly to Claude per platform. Update n8n Workflow 2 to receive full imagePayloads and use all fields for fal.ai call.
-14d. Learning capture — approval/edit event listeners that append to learnings.md when a user approves, edits, or rejects a platform variant
-14e. Cron skill implementation — POST /api/cron executing all 8 operations from skills/cron.md
-14f. Heartbeat API (GET /api/heartbeat) + dashboard system panel
-14g. AOS memory panel in settings page (view/edit MEMORY.md and learnings.md)
-15. Polish: auto-trigger safeguard, webhook URL validation banner, keyboard shortcuts, error states, first-run experience
-
----
-
----
-
-## Gap Features — Phase 2 Additions
-
-These features were identified via industry gap analysis (March 2026) against leading tools (Buffer, Taplio, Lately.ai, Repurpose.io). They are prioritised by impact and added as new build sessions.
-
----
-
-### Analytics Integration
-
-**Goal**: Pull real engagement data from published platforms via n8n and store in Google Sheet + local analytics store. Feed this into the learning system so the AOS improves from actual performance, not just approval patterns.
-
-#### Google Sheet schema additions
-
-Add these columns to the Sheet (one set per platform, appended after existing columns):
-
-```
-[platform]_impressions     integer — post reach/impressions
-[platform]_likes           integer
-[platform]_comments        integer
-[platform]_shares          integer
-[platform]_engagement_rate float — (likes+comments+shares) / impressions * 100
-[platform]_fetched_at      ISO date string — when metrics were last pulled
-```
-
-#### n8n Workflow 4 — Analytics Fetch
-
-**Trigger**: Scheduled (cron) — daily at 6am, or called via `POST /api/trigger/analytics`
-
-For each published post (status = `published`):
-1. Platform-specific API calls to fetch engagement metrics (Twitter API v2, Instagram Graph API, Facebook Graph API, etc.)
-2. Write metrics to the Sheet via Workflow 0 (`UPDATE_ANALYTICS` action)
-3. Call app callback `POST /api/callback/analytics` with `{ postId, platform, metrics }`
-
-**New Sheet action**: `UPDATE_ANALYTICS`
-```typescript
+## 2. Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 14 (App Router) |
+| Language | TypeScript (strict — no `any`) |
+| Styling | Tailwind CSS + shadcn/ui |
+| State management | Zustand v5 |
+| Forms | React Hook Form + Zod |
+| AI (direct calls) | OpenRouter API (openai-compatible) — NOT the Anthropic SDK directly |
+| Calendar | FullCalendar (React, daygrid + timegrid + interaction) |
+| Drag & drop | @dnd-kit/core + @dnd-kit/sortable + @dnd-kit/utilities |
+| HTTP client | Axios |
+| Dates | date-fns |
+| Notifications | Sonner |
+| Icons | Lucide React |
+| Fonts | Geist (next/font) |
+| Markdown metadata | gray-matter |
+| Pattern matching | minimatch |
+| Backend services | n8n (workflow automation) |
+| Data storage | Google Sheets (source of truth) + local file system (content/ directory) |
+| Config storage | Local JSON files in config/ |
+
+**package.json dependencies (exact versions):**
+```json
 {
-  postId: string
-  platform: Platform
-  metrics: {
-    impressions: number
-    likes: number
-    comments: number
-    shares: number
-    engagementRate: number
-  }
+  "next": "14.2.29",
+  "react": "^18",
+  "react-dom": "^18",
+  "zustand": "^5.0.3",
+  "react-hook-form": "^7.54.2",
+  "@hookform/resolvers": "^3.10.0",
+  "zod": "^3.24.2",
+  "axios": "^1.7.9",
+  "date-fns": "^4.1.0",
+  "sonner": "^1.7.4",
+  "lucide-react": "^0.474.0",
+  "@anthropic-ai/sdk": "^0.36.3",
+  "gray-matter": "^4.0.3",
+  "minimatch": "^10.0.1",
+  "@dnd-kit/core": "^6.3.1",
+  "@dnd-kit/sortable": "^8.0.0",
+  "@dnd-kit/utilities": "^3.2.2",
+  "@fullcalendar/react": "^6.1.15",
+  "@fullcalendar/daygrid": "^6.1.15",
+  "@fullcalendar/timegrid": "^6.1.15",
+  "@fullcalendar/interaction": "^6.1.15",
+  "clsx": "^2.1.1",
+  "tailwind-merge": "^2.6.0",
+  "class-variance-authority": "^0.7.1",
+  "@radix-ui/react-alert-dialog": "^1.1.6",
+  "@radix-ui/react-dialog": "^1.1.6",
+  "@radix-ui/react-label": "^2.1.2",
+  "@radix-ui/react-popover": "^1.1.6",
+  "@radix-ui/react-scroll-area": "^1.2.3",
+  "@radix-ui/react-select": "^2.1.6",
+  "@radix-ui/react-separator": "^1.1.2",
+  "@radix-ui/react-slot": "^1.1.2",
+  "@radix-ui/react-tabs": "^1.1.3",
+  "geist": "^1.3.1"
 }
 ```
 
-#### App-side analytics
-
-**`lib/analytics.ts`** — helpers:
-- `getPostAnalytics(postId: string)` — reads analytics columns from Sheet via n8n
-- `getTopPerformingPosts(platform: Platform, limit: number)` — sorted by engagement rate
-- `getBestPostingTimes(platform: Platform)` — derives from `published_at` timestamps of top posts
-- `getPlatformSummary(platform: Platform)` — avg engagement rate, total impressions, total posts
-
-**`/analytics` page** (new route):
-- Per-platform stats bar: total posts, avg engagement rate, total impressions, best performing post
-- Top posts table: sorted by engagement rate, shows post preview + metrics
-- Best time to post: derived from historical data, shown as a simple hour recommendation
-- Empty state: "Publish some posts first — analytics will appear here once platform metrics are fetched"
-
-**Dashboard stats bar additions**: Add "Avg engagement rate this week" and "Top platform" stats.
-
-**Cron skill integration** (Operation 9 — new):
-After fetching analytics, for each post with new metrics:
-1. Compare engagement rate to historical average for that platform
-2. If engagement rate > 2× average: append to `learnings.md` under `## Content performance` with the post snippet and what made it different (topic, format, hook style)
-3. If engagement rate < 0.5× average: flag patterns to avoid in `learnings.md`
-
-This closes the performance → learning feedback loop: actual platform data drives future AI generation quality.
-
----
-
-### First Comment Scheduling
-
-**Goal**: Schedule the first comment alongside a post (critical for LinkedIn — hashtags and links in first comment don't suppress reach).
-
-#### Type additions
-
-```typescript
-export interface PlatformVariant {
-  // ... existing fields ...
-  firstComment: string | null        // Text for the first comment (links, hashtags)
-  firstCommentScheduledAt: string | null  // When to post the comment (= post scheduledAt)
-}
-```
-
-#### Sheet schema additions
-
-Add per-platform:
-```
-[platform]_first_comment        string — first comment text
-[platform]_first_comment_status pending | published | failed
-```
-
-#### n8n Workflow 3 update (Publish)
-
-After posting the main content, if `payload.firstComment` is present:
-1. Wait 30 seconds (gives the post time to propagate)
-2. Call platform API to post as a comment on the published post
-3. Update Sheet `[platform]_first_comment_status` to `published` or `failed`
-
-#### UI additions
-
-In each platform card on the repurpose page:
-- **First comment textarea** — below main text, collapsible ("+ Add first comment")
-- Pre-filled suggestion for LinkedIn: top 3 relevant hashtags from hashtag bank + any links from the post
-- Character limit indicator
-- On approve: first comment text is saved to Sheet alongside main variant
-
-Platform-specific defaults:
-- **LinkedIn**: suggested first comment = hashtags (from hashtag bank) + any links mentioned in post text
-- **Twitter/X**: not shown (replies work differently)
-- **Instagram**: not shown (first comment is less impactful)
-- **Facebook/Skool**: shown but optional
-
----
-
-### Bulk Repurpose
-
-**Goal**: Select multiple posts from the dashboard and repurpose all at once.
-
-#### Dashboard additions
-
-- **Checkbox column** on each row in PostsTable
-- **"Select all" checkbox** in header
-- **Bulk action bar** (appears when ≥1 post selected):
-  - "Repurpose selected (N)" — fires `POST /api/trigger/repurpose` for each selected post sequentially (not parallel — avoids rate limits)
-  - "Clear selection" button
-  - Count: "5 posts selected"
-
-#### API additions
-
-**`POST /api/trigger/repurpose/bulk`**
-```typescript
-// Request body:
+**devDependencies:**
+```json
 {
-  postIds: string[]
-  platforms?: Platform[]   // default: all 5
-}
-// Processes posts sequentially with 2s delay between each
-// Returns: { queued: number; results: Array<{ postId: string; success: boolean; error?: string }> }
-```
-
-Sequential processing with delay prevents n8n from being overwhelmed. Each post fires its own trigger, same as single repurpose.
-
-**Bulk filter**: Only repurpose posts where ALL platforms are `pending`. Skip posts already in progress.
-
----
-
-### Evergreen Content Recycling Queue
-
-**Goal**: Re-queue top-performing posts for re-publication after a configurable interval.
-
-#### Settings additions — "Evergreen" tab on `/settings`
-
-- **Enable evergreen recycling** toggle (off by default)
-- **Minimum engagement threshold**: only recycle posts with engagement rate ≥ X% (default: 2%)
-- **Recycle interval**: minimum days between republications (default: 90 days)
-- **Platforms to recycle**: checkboxes per platform
-- Save to `config/evergreen.json`
-
-#### Cron skill additions (Operation 10 — new)
-
-**Operation 10 — Evergreen queue check**:
-1. Load `config/evergreen.json` — if disabled, skip
-2. Get all published posts from Sheet where `published_at` < (today − recycle_interval)
-3. For each: check `[platform]_engagement_rate` ≥ threshold
-4. For qualifying posts: set status back to `approved` in Sheet (ready to be scheduled again)
-5. Log to `memory/learnings.md`: "Evergreen: recycled [N] posts for [platform]"
-6. These posts appear in dashboard with `approved` status and a subtle "♻ Recycled" badge
-
-#### UI additions
-
-- **"♻" badge** on post rows in dashboard where a variant has been recycled
-- **Evergreen tab** in settings with the configuration above
-
----
-
-### Hook Variant Generation
-
-**Goal**: Generate 2–3 hook options per platform so the user can pick the best opening before approving.
-
-#### Platform skill update
-
-All content skill files: add a `hookVariants` field to the output contract.
-
-Updated `ContentPromptOutput`:
-```typescript
-interface ContentPromptOutput {
-  systemPrompt: string
-  userPrompt: string
-  hookVariants: string[]   // 2-3 alternative opening lines — user picks one or uses AI default
-  context: { ... }
+  "typescript": "^5",
+  "@types/node": "^20",
+  "@types/react": "^18",
+  "@types/react-dom": "^18",
+  "tailwindcss": "^3.4.1",
+  "postcss": "^8",
+  "autoprefixer": "^10.0.1",
+  "eslint": "^8",
+  "eslint-config-next": "14.2.29",
+  "tailwindcss-animate": "^1.0.7"
 }
 ```
 
-The system prompt in each skill file instructs the model to additionally return 2–3 hook alternatives at the top of the output.
-
-#### UI additions
-
-In each platform card, after text generation:
-- **Hook picker panel** (collapsible, shown above the main textarea): "Try a different hook"
-- Shows 2–3 hook options as clickable chips
-- Clicking a hook replaces the first line of the generated text in the textarea
-- Marked with "✎ edited" indicator since it's a user modification
-- If `hookVariants` is empty or missing (model didn't return them): panel is hidden
+> **Note about AI SDK:** The `@anthropic-ai/sdk` package is installed but the app uses **OpenRouter's OpenAI-compatible API** (`https://openrouter.ai/api/v1/chat/completions`) for all direct LLM calls. Do not import `@anthropic-ai/sdk` — use `fetch` directly against OpenRouter.
 
 ---
 
-### LinkedIn Carousel / PDF Posts
+## 3. Architecture Overview
 
-**Goal**: Generate carousel-format content (multi-slide posts uploaded as PDF) as an additional output format — LinkedIn's highest-reach format.
-
-#### New platform skill variant
-
-Add `linkedin-carousel-content.md` to `skills/platforms/`:
-- Input: `linkedinText` (source post)
-- Output: structured slide deck content
-
-New `CarouselPromptOutput`:
-```typescript
-interface CarouselPromptOutput {
-  postId: string
-  coverSlide: {
-    headline: string      // Bold hook — max 8 words
-    subheadline: string   // Supporting line — max 15 words
-  }
-  slides: Array<{
-    slideNumber: number
-    title: string         // Max 8 words
-    body: string          // 2–3 bullet points or 1 short paragraph
-  }>                      // 5–8 content slides
-  closingSlide: {
-    callToAction: string  // "Save this for later" / "Share if this resonated"
-    authorLine: string    // "@handle — topic pillar"
-  }
-  caption: string         // LinkedIn post caption that accompanies the PDF upload
-  hashtags: string[]      // 3–5 hashtags for the caption
-}
+```
+Pulse App (Next.js)  ←→  n8n Workflows  ←→  Google Sheets (master data)
+        ↓                      ↓
+  OpenRouter API          ImageRouter API (image generation)
+  (chat sidebar,          Twitter API v2, Meta Graph API,
+   hashtag suggestions,   Skool placeholder
+   skill execution)
 ```
 
-#### Carousel skill rules
+### Data flow
+1. Creator adds LinkedIn posts to Google Sheet manually (or via future automation)
+2. App fetches posts from Sheet via n8n WF0 (Sheet Operations webhook)
+3. Creator selects a post → triggers repurpose
+4. App runs platform skills locally (OpenRouter direct) to build structured prompts
+5. App fires n8n WF1 (Content Repurpose) with pre-built prompts — n8n calls OpenRouter for actual generation
+6. n8n writes generated text + hashtags to Sheet, calls back to app
+7. App polls Sheet every 3s, picks up generated content
+8. Creator reviews, edits, approves variants
+9. App fires n8n WF2 (Image Repurpose) for image generation
+10. Creator schedules and publishes via n8n WF3 (Publish)
+11. n8n publishes to platforms, writes published status back to Sheet
 
-- Cover slide: hook must stop the scroll — use the most provocative insight from the post
-- Each slide: one idea only — no cramming
-- Font-friendly: no special characters, emojis, or markdown
-- Closing slide: always include a save/share CTA + author attribution
-- Caption: short teaser (first 2–3 sentences of the LinkedIn post) + "Full breakdown in the carousel 👇"
-- Aim for 6–7 slides total (cover + 4–5 content + closing)
-
-#### UI additions
-
-In the repurpose page, add a **"LinkedIn Carousel"** toggle in the source panel:
-- Generates carousel content via the new skill (separate from the 5-platform text skills)
-- Shows a **Carousel Preview** component: vertically stacked slide cards with cover → content slides → closing
-- Each slide is editable inline
-- **Export options**:
-  - "Copy as JSON" — for paste into Canva / design tool via API
-  - "Copy slide texts" — plain text block per slide for manual design
-  - Future: direct Canva API integration
-
-This adds LinkedIn as an additional output target (not just a source), closing the loop.
+### Key architectural decisions
+- **App never calls OpenRouter for repurposing directly** — it only fires webhooks to n8n with pre-built prompts. n8n does the actual LLM call.
+- **App calls OpenRouter directly** for: chat sidebar, hashtag suggestions, image prompt generation, and skill execution (building the prompts).
+- **Google Sheet is source of truth** for all post state. Local content/ files are for auditing/debugging.
+- **No user authentication** — this is a single-creator personal tool.
+- **File system** stores generated content as markdown in `content/{postId}/{platform}.md` with gray-matter frontmatter.
 
 ---
 
-### Image Brand Kit
+## 4. Environment Variables
 
-**Goal**: Define visual brand constraints (color palette, style, mood board) that are fed consistently into every image generation prompt — ensuring visual coherence across all platforms.
-
-#### Settings additions — "Image Brand Kit" section in Brand Voice tab
-
-Form fields:
-- **Primary brand color**: hex picker
-- **Secondary brand color**: hex picker
-- **Visual style**: pill selection — Minimal / Bold / Warm / Monochrome / Vibrant / Dark
-- **Photography style**: pill selection — Photorealistic / Illustrated / Abstract / Data-viz / Flat
-- **Mood keywords**: tag input — "calm", "energetic", "professional", "playful" (max 5)
-- **Avoid in images**: tag input — "stock photo clichés", "handshakes", "lightbulbs"
-
-Saved to `config/brand-voice.json` under a new `imageBrandKit` field:
-```typescript
-export interface BrandVoiceProfile {
-  // ... existing fields ...
-  imageBrandKit: {
-    primaryColor: string      // hex e.g. "#7C3AED"
-    secondaryColor: string    // hex
-    visualStyle: string       // "minimal" | "bold" | "warm" | "monochrome" | "vibrant" | "dark"
-    photographyStyle: string  // "photorealistic" | "illustrated" | "abstract" | "flat"
-    moodKeywords: string[]
-    avoidInImages: string[]
-  }
-}
-```
-
-#### Image skill update
-
-All image skill files: inject `imageBrandKit` into the prompt template.
-
-Updated prompt template suffix (added to every image skill's prompt construction):
-```
-BRAND VISUAL IDENTITY:
-Primary color: {imageBrandKit.primaryColor} — use as accent or dominant tone
-Style: {imageBrandKit.visualStyle} — {imageBrandKit.photographyStyle}
-Mood: {imageBrandKit.moodKeywords}
-Avoid: {imageBrandKit.avoidInImages}
-All images for this brand must feel visually consistent with each other.
-```
-
-Updated `negativePrompt` suffix:
-```
-{imageBrandKit.avoidInImages joined by ", "}, inconsistent style, clashing colors
-```
-
-This ensures every fal.ai generation reflects the user's visual identity, not just the post topic.
-
----
-
-## n8n Workflow Updates for Phase 2
-
-These are the changes required to the existing 4 workflows plus the spec for new Workflow 4 (Analytics). Apply these using the n8n MCP server after building the Phase 2 app sessions.
-
----
-
-### Workflow 0 Updates — Sheet Operations
-
-**Why it changes**: Two new Phase 2 features (analytics, first comment) write new columns. The Switch router needs 2 new branches, and the Column Map needs new fields.
-
-#### New Google Sheet columns
-
-Add these columns to the "Posts" sheet, appended after column AW:
-
-```
-Analytics columns (per platform — 6 cols each, 30 new cols total):
-Column AX: twitter_impressions
-Column AY: twitter_likes
-Column AZ: twitter_comments
-Column BA: twitter_shares
-Column BB: twitter_engagement_rate
-Column BC: twitter_fetched_at
-
-Column BD: threads_impressions
-Column BE: threads_likes
-Column BF: threads_comments
-Column BG: threads_shares
-Column BH: threads_engagement_rate
-Column BI: threads_fetched_at
-
-Column BJ: instagram_impressions
-Column BK: instagram_likes
-Column BL: instagram_comments
-Column BM: instagram_shares
-Column BN: instagram_engagement_rate
-Column BO: instagram_fetched_at
-
-Column BP: facebook_impressions
-Column BQ: facebook_likes
-Column BR: facebook_comments
-Column BS: facebook_shares
-Column BT: facebook_engagement_rate
-Column BU: facebook_fetched_at
-
-Column BV: skool_impressions
-Column BW: skool_likes
-Column BX: skool_comments
-Column BY: skool_shares
-Column BZ: skool_engagement_rate
-Column CA: skool_fetched_at
-
-First comment columns (per platform — 2 cols each, 10 new cols total):
-Column CB: twitter_first_comment
-Column CC: twitter_first_comment_status
-Column CD: threads_first_comment
-Column CE: threads_first_comment_status
-Column CF: instagram_first_comment
-Column CG: instagram_first_comment_status
-Column CH: facebook_first_comment
-Column CI: facebook_first_comment_status
-Column CJ: skool_first_comment
-Column CK: skool_first_comment_status
-```
-
-#### Updated COLUMN_MAP (replace in "Define Column Map" Code node)
-
-```javascript
-const COLUMN_MAP = {
-  twitter:   {
-    text:'E', contentPrompt:'F', imagePrompt:'G', imageUrl:'H', hashtags:'I',
-    status:'J', scheduledAt:'K', publishedAt:'L', error:'M',
-    impressions:'AX', likes:'AY', comments:'AZ', shares:'BA', engagementRate:'BB', fetchedAt:'BC',
-    firstComment:'CB', firstCommentStatus:'CC',
-  },
-  threads:   {
-    text:'N', contentPrompt:'O', imagePrompt:'P', imageUrl:'Q', hashtags:'R',
-    status:'S', scheduledAt:'T', publishedAt:'U', error:'V',
-    impressions:'BD', likes:'BE', comments:'BF', shares:'BG', engagementRate:'BH', fetchedAt:'BI',
-    firstComment:'CD', firstCommentStatus:'CE',
-  },
-  instagram: {
-    text:'W', contentPrompt:'X', imagePrompt:'Y', imageUrl:'Z', hashtags:'AA',
-    status:'AB', scheduledAt:'AC', publishedAt:'AD', error:'AE',
-    impressions:'BJ', likes:'BK', comments:'BL', shares:'BM', engagementRate:'BN', fetchedAt:'BO',
-    firstComment:'CF', firstCommentStatus:'CG',
-  },
-  facebook:  {
-    text:'AF', contentPrompt:'AG', imagePrompt:'AH', imageUrl:'AI', hashtags:'AJ',
-    status:'AK', scheduledAt:'AL', publishedAt:'AM', error:'AN',
-    impressions:'BP', likes:'BQ', comments:'BR', shares:'BS', engagementRate:'BT', fetchedAt:'BU',
-    firstComment:'CH', firstCommentStatus:'CI',
-  },
-  skool:     {
-    text:'AO', contentPrompt:'AP', imagePrompt:'AQ', imageUrl:'AR', hashtags:'AS',
-    status:'AT', scheduledAt:'AU', publishedAt:'AV', error:'AW',
-    impressions:'BV', likes:'BW', comments:'BX', shares:'BY', engagementRate:'BZ', fetchedAt:'CA',
-    firstComment:'CJ', firstCommentStatus:'CK',
-  },
-};
-```
-
-#### New Switch outputs (add to existing Switch node)
-
-```
-Output 7 → UPDATE_ANALYTICS
-Output 8 → UPDATE_FIRST_COMMENT
-```
-
-Update Switch sticky note to show total 9 actions.
-
-#### New Branch 7 — UPDATE_ANALYTICS
-
-Code node "Build Analytics Update":
-```javascript
-const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
-const { postId, platform, metrics } = $('Define Column Map').first().json.payload;
-const cols = COLUMN_MAP[platform];
-const updateObj = { 'post_id': postId };
-if (metrics.impressions !== undefined) updateObj[cols.impressions] = metrics.impressions;
-if (metrics.likes !== undefined)       updateObj[cols.likes] = metrics.likes;
-if (metrics.comments !== undefined)    updateObj[cols.comments] = metrics.comments;
-if (metrics.shares !== undefined)      updateObj[cols.shares] = metrics.shares;
-if (metrics.engagementRate !== undefined) updateObj[cols.engagementRate] = metrics.engagementRate;
-updateObj[cols.fetchedAt] = new Date().toISOString();
-return [{ json: updateObj }];
-```
-
-→ Google Sheets node "GS Update Analytics":
-- Operation: Update, Sheet: Posts, Matching Column: post_id
-
-→ Respond to Webhook "Respond: UPDATE_ANALYTICS": `{"success":true}`
-
-#### New Branch 8 — UPDATE_FIRST_COMMENT
-
-Code node "Build First Comment Update":
-```javascript
-const COLUMN_MAP = $('Define Column Map').first().json.COLUMN_MAP;
-const { postId, platform, firstComment, firstCommentStatus } = $('Define Column Map').first().json.payload;
-const cols = COLUMN_MAP[platform];
-const updateObj = { 'post_id': postId };
-if (firstComment !== undefined)       updateObj[cols.firstComment] = firstComment || '';
-if (firstCommentStatus !== undefined) updateObj[cols.firstCommentStatus] = firstCommentStatus;
-return [{ json: updateObj }];
-```
-
-→ Google Sheets node "GS Update First Comment":
-- Operation: Update, Sheet: Posts, Matching Column: post_id
-
-→ Respond to Webhook "Respond: UPDATE_FIRST_COMMENT": `{"success":true}`
-
-#### Step-by-step implementation guide (15 steps)
-
-Perform these steps in order. The workflow is already active — do NOT deactivate it.
-
-**PART 1 — Google Sheet (do this first)**
-
-**Step 1 — Add 40 new column headers to the "Posts" sheet**, appended after column AW:
-
-| Column | Header |
-|--------|--------|
-| AX | twitter_impressions |
-| AY | twitter_likes |
-| AZ | twitter_comments |
-| BA | twitter_shares |
-| BB | twitter_engagement_rate |
-| BC | twitter_fetched_at |
-| BD | threads_impressions |
-| BE | threads_likes |
-| BF | threads_comments |
-| BG | threads_shares |
-| BH | threads_engagement_rate |
-| BI | threads_fetched_at |
-| BJ | instagram_impressions |
-| BK | instagram_likes |
-| BL | instagram_comments |
-| BM | instagram_shares |
-| BN | instagram_engagement_rate |
-| BO | instagram_fetched_at |
-| BP | facebook_impressions |
-| BQ | facebook_likes |
-| BR | facebook_comments |
-| BS | facebook_shares |
-| BT | facebook_engagement_rate |
-| BU | facebook_fetched_at |
-| BV | skool_impressions |
-| BW | skool_likes |
-| BX | skool_comments |
-| BY | skool_shares |
-| BZ | skool_engagement_rate |
-| CA | skool_fetched_at |
-| CB | twitter_first_comment |
-| CC | twitter_first_comment_status |
-| CD | threads_first_comment |
-| CE | threads_first_comment_status |
-| CF | instagram_first_comment |
-| CG | instagram_first_comment_status |
-| CH | facebook_first_comment |
-| CI | facebook_first_comment_status |
-| CJ | skool_first_comment |
-| CK | skool_first_comment_status |
-
-**PART 2 — "Define Column Map" Code Node**
-
-**Step 2 — Open the "Define Column Map" node. Replace the entire COLUMN_MAP constant** with the updated version from the "Updated COLUMN_MAP" section above. The `body` and `return` lines at the end stay the same — only the object literal changes.
-
-**PART 3 — "Route Action" Switch Node**
-
-**Step 3 — Open the "Route Action" Switch node. Add two new rules** (do not modify existing rules 0–6):
-- Rule for **Output 7**: condition `{{ $json.action }}` equals `UPDATE_ANALYTICS`
-- Rule for **Output 8**: condition `{{ $json.action }}` equals `UPDATE_FIRST_COMMENT`
-
-**PART 4 — New Branch 7: UPDATE_ANALYTICS**
-
-**Step 4 — Add a Code node named "Build Analytics Update"**
-- Mode: Run Once for All Items
-- Code: (see "New Branch 7 — UPDATE_ANALYTICS" section above)
-
-**Step 5 — Add a Google Sheets node named "GS Update Analytics"**
-- Operation: Update
-- Document: same spreadsheet (SPREADSHEET_ID variable)
-- Sheet: Posts
-- Matching Column: `post_id`
-- Value to Update: map from incoming item fields
-
-**Step 6 — Add a Respond to Webhook node named "Respond: UPDATE_ANALYTICS"**
-- Response Body: `{"success":true}`
-
-**Step 7 — Connect the three nodes:**
-Switch output 7 → Build Analytics Update → GS Update Analytics → Respond: UPDATE_ANALYTICS
-
-**PART 5 — New Branch 8: UPDATE_FIRST_COMMENT**
-
-**Step 8 — Add a Code node named "Build First Comment Update"**
-- Mode: Run Once for All Items
-- Code: (see "New Branch 8 — UPDATE_FIRST_COMMENT" section above)
-
-**Step 9 — Add a Google Sheets node named "GS Update First Comment"**
-- Operation: Update
-- Document: same spreadsheet (SPREADSHEET_ID variable)
-- Sheet: Posts
-- Matching Column: `post_id`
-- Value to Update: map from incoming item fields
-
-**Step 10 — Add a Respond to Webhook node named "Respond: UPDATE_FIRST_COMMENT"**
-- Response Body: `{"success":true}`
-
-**Step 11 — Connect the three nodes:**
-Switch output 8 → Build First Comment Update → GS Update First Comment → Respond: UPDATE_FIRST_COMMENT
-
-**PART 6 — Update Sticky Notes**
-
-**Step 12 — Update the "PULSE - SHEET OPERATIONS (Workflow 0)" overview sticky note:**
-- Change `SUPPORTED ACTIONS (7 total)` → `SUPPORTED ACTIONS (9 total)`
-- Add to action list: `UPDATE_ANALYTICS → Write engagement metrics for one platform`
-- Add to action list: `UPDATE_FIRST_COMMENT → Write first comment text and status for one platform`
-
-**Step 13 — Update the "🔀 ACTION ROUTER (Switch)" sticky note:**
-- Add to OUTPUT MAPPING: `7 → UPDATE_ANALYTICS`
-- Add to OUTPUT MAPPING: `8 → UPDATE_FIRST_COMMENT`
-
-**PART 7 — Save & Verify**
-
-**Step 14 — Save the workflow** (already active; no need to re-activate).
-
-**Step 15 — Smoke test both new actions with curl:**
+Create `.env.local` with these variables:
 
 ```bash
-# Test UPDATE_ANALYTICS
-curl -X POST https://n8n.devengoratela.in/webhook/pulse-sheet \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action": "UPDATE_ANALYTICS",
-    "payload": {
-      "postId": "YOUR_REAL_POST_ID",
-      "platform": "twitter",
-      "metrics": { "impressions": 100, "likes": 10, "comments": 2, "shares": 3, "engagementRate": 15.0 }
-    }
-  }'
-# Expected: {"success":true}
+# n8n webhook URLs — required for app to function
+N8N_SHEET_WEBHOOK_URL=https://n8n.yourdomain.com/webhook/pulse-sheet-ops
+N8N_CONTENT_REPURPOSE_WEBHOOK_URL=https://n8n.yourdomain.com/webhook/pulse-content-repurpose
+N8N_IMAGE_REPURPOSE_WEBHOOK_URL=https://n8n.yourdomain.com/webhook/pulse-image-repurpose
+N8N_PUBLISH_WEBHOOK_URL=https://n8n.yourdomain.com/webhook/pulse-publish
 
-# Test UPDATE_FIRST_COMMENT
-curl -X POST https://n8n.devengoratela.in/webhook/pulse-sheet \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action": "UPDATE_FIRST_COMMENT",
-    "payload": {
-      "postId": "YOUR_REAL_POST_ID",
-      "platform": "twitter",
-      "firstComment": "What do you think?",
-      "firstCommentStatus": "pending"
-    }
-  }'
-# Expected: {"success":true}
+# Optional analytics webhook
+N8N_ANALYTICS_WEBHOOK_URL=https://n8n.yourdomain.com/webhook/pulse-analytics
+
+# OpenRouter — required for skill execution, chat sidebar, hashtag suggestions
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=openrouter/auto   # or e.g. "anthropic/claude-3-5-sonnet"
+
+# App public URL — used for n8n callbacks
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+
+# Cron protection
+CRON_SECRET=your-secret-here
+
+# Optional cron schedule (default: 7am daily)
+CRON_SCHEDULE=0 7 * * *
 ```
 
-#### New app-side lib/n8n-sheet.ts functions
+Create `lib/env.ts` that validates required env vars and throws clear errors if missing. Warn (not throw) if `OPENROUTER_API_KEY` is missing so non-AI features still work.
+
+---
+
+## 5. TypeScript Types (types/index.ts)
 
 ```typescript
-export async function updateAnalytics(
-  postId: string,
-  platform: Platform,
-  metrics: { impressions: number; likes: number; comments: number; shares: number; engagementRate: number }
-): Promise<void>
+export type Platform = 'twitter' | 'threads' | 'instagram' | 'facebook' | 'skool' | 'linkedin'
 
-export async function updateFirstComment(
-  postId: string,
-  platform: Platform,
-  firstComment: string,
-  firstCommentStatus: 'pending' | 'published' | 'failed'
-): Promise<void>
-```
+export type PostStatus = 'pending' | 'approved' | 'scheduled' | 'published' | 'failed'
 
----
+export type GenerationStatus = 'idle' | 'generating_text' | 'generating_images' | 'done' | 'failed'
 
-### Workflow 1 — No Changes Required
+export interface LinkedInPost {
+  id: string                        // Unique row ID from Sheet (row number as string)
+  linkedinText: string              // Original LinkedIn post text
+  linkedinImageUrl: string | null   // Original image URL if available
+  postedAt: string                  // ISO date string
+  platforms: Record<Platform, PlatformVariant>
+}
 
-Hook variants are generated by the app's platform skill executor (LLM call inside the app before the webhook fires). n8n receives the pre-built `systemPrompt`+`userPrompt` and calls Claude — the result is still `{ text, hashtags, format }`. Hook variants live in the app's `ContentPromptOutput` object and are written to the content `.md` file, not to the Sheet. **Workflow 1 is unchanged.**
+export interface PlatformVariant {
+  text: string | null
+  contentPrompt: string | null      // JSON string of { systemPrompt, userPrompt } from content skill
+  imagePrompt: string | null        // fal.ai/ImageRouter prompt string from image skill
+  imageUrl: string | null
+  hashtags: string[]
+  status: PostStatus
+  generatedAt: string | null
+  scheduledAt: string | null
+  publishedAt: string | null
+  approvedAt: string | null
+  isEdited: boolean
+  error: string | null
+  // Analytics fields — written by n8n after publishing
+  platformPostId: string | null     // Native post ID on the platform
+  impressions: number | null
+  likes: number | null
+  comments: number | null
+  shares: number | null
+  engagementRate: number | null     // (likes+comments+shares) / impressions * 100
+  fetchedAt: string | null          // When analytics were last fetched
+  // First comment fields
+  firstComment: string | null       // Comment to post ~30s after publish
+  firstCommentStatus: string | null // 'pending' | 'published' | 'failed' | null
+}
 
----
+export interface ImageBrandKit {
+  primaryColor: string              // Hex e.g. "#7C3AED"
+  secondaryColor: string            // Hex e.g. "#A78BFA"
+  visualStyle: string[]             // e.g. ["minimalist", "bold", "editorial"]
+  photographyStyle: string[]        // e.g. ["product", "lifestyle", "abstract"]
+  moodKeywords: string[]            // e.g. ["confident", "modern", "clean"]
+  avoidInImages: string[]           // e.g. ["people", "text overlays", "stock handshakes"]
+}
 
-### Workflow 2 — No Changes Required
+export interface BrandVoiceProfile {
+  toneDescriptors: string[]         // e.g. ["direct", "practical", "no fluff"]
+  writingStyle: string              // Free text paragraph
+  topicPillars: string[]            // e.g. ["solopreneurship", "AI tools", "productivity"]
+  avoidList: string[]               // Words/phrases/patterns to never use
+  examplePosts: string[]            // 3–5 raw LinkedIn post texts the creator loves
+  imageBrandKit: ImageBrandKit      // Visual identity for AI image generation
+  lastUpdated: string               // ISO date string
+}
 
-Image brand kit constraints (`primaryColor`, `visualStyle`, `photographyStyle`, etc.) are injected into the `prompt` string by the app's image skill files before the webhook fires. n8n receives a fully-formed prompt string and passes it directly to fal.ai. **Workflow 2 is unchanged.**
+export interface HashtagBankEntry {
+  id: string
+  hashtag: string                   // Without # prefix
+  platforms: Platform[]
+  topicPillar: string | null
+  usageCount: number
+  lastUsed: string | null
+}
 
----
+export interface RepurposeSession {
+  sourcePost: LinkedInPost
+  variants: Record<Platform, RepurposeVariantDraft>
+  activeChat: ChatMessage[]
+  activePlatform: Platform | null
+  generationStatus: GenerationStatus
+  imageGenerationStatus: GenerationStatus
+}
 
-### Workflow 3 Updates — Publish
+export interface RepurposeVariantDraft {
+  text: string
+  imageUrl: string | null
+  imagePrompt: string | null
+  hashtags: string[]
+  suggestedHashtags: string[]       // From AI, not yet added
+  isApproved: boolean
+  isEdited: boolean                 // True if user manually edited AI output
+}
 
-**Why it changes**: First comment must be posted ~30 seconds after the main post publishes, using the platform's comment API endpoint.
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+}
 
-#### Updated payload
+export interface ContentPromptOutput {
+  systemPrompt: string
+  userPrompt: string
+  hookVariants: string[]            // 2–3 alternative opening lines (≤60 chars each)
+  context: {
+    platformLabel: string
+    maxChars: number
+    hashtagCount: string            // e.g. "1-3 hashtags"
+    threadEnabled: boolean
+    learningsApplied: string[]
+  }
+}
 
-```typescript
+export interface CarouselSlide {
+  headline: string
+  body: string
+}
+
+export interface CarouselPromptOutput {
+  coverSlide: { headline: string; subheadline: string }
+  slides: CarouselSlide[]
+  closingSlide: { headline: string; cta: string }
+  caption: string
+  hashtags: string[]
+}
+
+export interface ImagePromptOutput {
+  prompt: string
+  sourceImageUrl: string | null
+  styleDirectives: {
+    aspectRatio: string
+    width: number
+    height: number
+    mood: string
+    colorTone: string
+    composition: string
+    textOverlay: false
+  }
+  negativePrompt: string
+}
+
+// Webhook payloads
+export interface ContentRepurposeWebhookPayload {
+  postId: string
+  contentPrompts: Partial<Record<Platform, {
+    systemPrompt: string
+    userPrompt: string
+    context: {
+      platformLabel: string
+      maxChars: number
+      hashtagCount: string
+      threadEnabled: boolean
+      learningsApplied: string[]
+    }
+  }>>
+  callbackUrl: string
+}
+
+export interface ImageRepurposeWebhookPayload {
+  postId: string
+  imagePayloads: Partial<Record<Platform, ImagePromptOutput>>
+  callbackUrl: string
+}
+
 export interface PublishWebhookPayload {
   platform: Platform
   text: string
@@ -5172,409 +363,1533 @@ export interface PublishWebhookPayload {
   scheduledAt: string | null
   sheetRowId: string
   postId: string
-  firstComment: string | null   // NEW — null means no first comment to post
+  callbackUrl: string
+  firstComment: string | null
 }
-```
 
-#### New nodes (add after the publish success branch, before Sheet status update)
+export interface N8nCallbackPayload {
+  postId: string
+  status: 'done' | 'failed'
+  error?: string
+}
 
-After each platform branch successfully publishes, add:
+export interface CalendarEvent {
+  id: string
+  postId: string
+  platform: Platform
+  title: string                     // First 60 chars of text
+  start: Date
+  status: PostStatus
+  color: string                     // Platform color hex
+}
 
-**IF node "Has First Comment"** (connected after publish success):
-- Condition: `{{ $json.firstComment }}` is not empty
+export interface GapWarning {
+  platform: Platform
+  lastPostDate: string
+  daysGap: number
+  pillarGap: string | null          // e.g. "No AI tools content in 10 days"
+}
 
-→ **True branch:**
+export type SheetAction =
+  | 'GET_ALL_POSTS'
+  | 'GET_POST_BY_ID'
+  | 'UPDATE_PLATFORM_VARIANT'
+  | 'UPDATE_MULTIPLE_PLATFORMS'
+  | 'WRITE_CONTENT_PROMPTS'
+  | 'WRITE_IMAGE_PROMPTS'
+  | 'UPDATE_STATUS'
+  | 'UPDATE_ANALYTICS'
+  | 'UPDATE_FIRST_COMMENT'
 
-**Wait node "Wait 30s Before Comment"**:
-- Wait For: 30 seconds
-- (Gives platform API time to register the new post)
+export interface SheetWebhookRequest<A extends SheetAction = SheetAction> {
+  action: A
+  payload: SheetActionPayload[A]
+}
 
-**HTTP Request node "Post First Comment"** (platform-specific):
-- Twitter/X: `POST https://api.twitter.com/2/tweets` with `{ "text": firstComment, "reply": { "in_reply_to_tweet_id": publishedPostId } }`
-- Instagram: `POST https://graph.facebook.com/v19.0/{media_id}/comments` with `{ "message": firstComment }`
-- Facebook: `POST https://graph.facebook.com/v19.0/{post_id}/comments` with `{ "message": firstComment }`
-- Threads: `POST https://graph.threads.net/v1.0/me/threads` (reply)
-- Skool: No comment API — skip (IF condition won't match as Skool has no firstComment)
-- Continue on Fail: true (comment failure must NOT block status update)
-
-**HTTP Request node "Update First Comment Status in Sheet"**:
-```json
-{
-  "action": "UPDATE_FIRST_COMMENT",
-  "payload": {
-    "postId": "={{ $json.postId }}",
-    "platform": "={{ $json.platform }}",
-    "firstComment": "={{ $json.firstComment }}",
-    "firstCommentStatus": "published"
+export interface SheetActionPayload {
+  GET_ALL_POSTS: {
+    statusFilter?: PostStatus
+    platformFilter?: Platform
+    fromDate?: string
+    toDate?: string
+  }
+  GET_POST_BY_ID: { postId: string }
+  UPDATE_PLATFORM_VARIANT: {
+    postId: string
+    platform: Platform
+    variant: Partial<PlatformVariant>
+  }
+  UPDATE_MULTIPLE_PLATFORMS: {
+    postId: string
+    variants: Partial<Record<Platform, Partial<PlatformVariant>>>
+  }
+  WRITE_CONTENT_PROMPTS: {
+    postId: string
+    prompts: Partial<Record<Platform, string>>
+  }
+  WRITE_IMAGE_PROMPTS: {
+    postId: string
+    prompts: Partial<Record<Platform, string>>
+  }
+  UPDATE_STATUS: {
+    postId: string
+    platform: Platform
+    status: PostStatus
+  }
+  UPDATE_ANALYTICS: {
+    postId: string
+    platform: Platform
+    metrics: {
+      impressions: number
+      likes: number
+      comments: number
+      shares: number
+      engagementRate: number
+      fetchedAt: string
+    }
+  }
+  UPDATE_FIRST_COMMENT: {
+    postId: string
+    platform: Platform
+    firstComment: string | null
+    firstCommentStatus?: string | null
   }
 }
-```
-URL: `={{ $vars.N8N_SHEET_WEBHOOK_URL }}`
 
-→ **False branch (no first comment)**: Skip directly to Sheet status update.
-
-**Error handler addition**: If "Post First Comment" fails → update Sheet `firstCommentStatus` to `failed` (do not mark main post as failed — it published successfully).
-
-#### Updated Sticky Note 1 (Workflow 3 overview)
-
-Add to PURPOSE section:
-```
-FIRST COMMENT SUPPORT (Phase 2):
-If payload.firstComment is non-null:
-  1. After successful publish, wait 30 seconds
-  2. Call platform comment API with firstComment text
-  3. Update Sheet [platform]_first_comment_status = published|failed
-  Comment failure does NOT affect main post status — handle independently.
+export interface EvergreenConfig {
+  enabled: boolean
+  engagementThreshold: number       // Min engagement rate % to qualify (e.g. 3 = 3%)
+  recycleIntervalDays: number       // Days since publishedAt before eligible to recycle
+  platforms: Platform[]             // Which platforms to reset to approved on recycle
+}
 ```
 
 ---
 
-### Workflow 4 — Analytics Fetch (New)
+## 6. Platform Rules (lib/platform-rules.ts)
 
-```
-Using the n8n MCP server tools, create a new n8n workflow with the following exact specification. Name the workflow "Pulse - Analytics Fetch".
+```typescript
+import type { Platform } from "@/types"
 
-═══════════════════════════════════════
-STICKY NOTES
-═══════════════════════════════════════
+export interface PlatformRule {
+  label: string
+  color: string
+  maxChars: number
+  threadEnabled: boolean
+  maxThreadTweets: number | null
+  imageAspectRatio: string
+  imageWidth: number
+  imageHeight: number
+  hashtagCount: { min: number; max: number }
+  tone: string
+  formatRules: string
+  avoidPatterns: string[]
+}
 
-STICKY NOTE 1 — top of canvas, named "📋 WORKFLOW OVERVIEW":
-PULSE - ANALYTICS FETCH (Workflow 4)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-PURPOSE:
-Fetches real engagement metrics from published platform posts and writes
-them back to Google Sheet. Called daily via Schedule trigger or manually
-via POST /api/trigger/analytics. Feeds real data into the AOS learning
-loop so the AI improves based on actual performance, not just approvals.
-
-TRIGGERS: Two triggers run this same flow:
-  1. Schedule trigger — daily at 06:00 (configurable)
-  2. Webhook trigger — POST for manual trigger from app
-
-INPUTS (webhook mode):
-  { "postIds"?: string[], "platforms"?: string[], "callbackUrl"?: string }
-  If postIds omitted: fetch metrics for ALL published posts.
-
-OUTPUTS:
-  - Writes analytics columns to Sheet via Workflow 0 UPDATE_ANALYTICS action
-  - Calls app callback POST /api/callback/analytics with results summary
-  - Logs fetch timestamp per post/platform to Sheet
-
-CREDENTIALS REQUIRED:
-  - Twitter/X: "Twitter - Pulse" (OAuth2 / API v2 Bearer Token)
-  - Instagram/Facebook: "Meta - Pulse" (Facebook App + access tokens)
-  - Threads: "Threads - Pulse" (Meta Threads API access token)
-  - Skool: No public engagement API — skip impressions, use published count only
-  - N8N_SHEET_WEBHOOK_URL (workflow variable = Workflow 0 URL)
-  - N8N_APP_CALLBACK_URL (workflow variable = app base URL + /api/callback/analytics)
-
-FLOW:
-Trigger(s) → Get Published Posts → Split by Platform →
-Call Platform API → Parse Metrics → Write to Sheet → Callback
-
-LIMITATIONS:
-  - Twitter free tier: 500k API reads/month. Fetch daily, not per-post on-demand.
-  - Instagram: Business/Creator account required for Insights API.
-  - Facebook: Page API for Pages; personal profiles have no public insights API.
-  - Skool: No engagement API — omit metrics for Skool posts.
-
-STICKY NOTE 2 — named "⏰ SCHEDULE TRIGGER":
-Runs at 06:00 daily. Fetches metrics for all posts published in last 30 days.
-Older posts are unlikely to get new engagement — skip them for efficiency.
-Configure timezone to match user's local timezone.
-
-STICKY NOTE 3 — named "⚡ WEBHOOK TRIGGER":
-Path: pulse-analytics
-Method: POST
-COPY THIS URL → .env.local as N8N_ANALYTICS_WEBHOOK_URL
-Used by POST /api/trigger/analytics for manual refresh.
-Responds immediately — processing is async.
-
-STICKY NOTE 4 — named "📖 GET PUBLISHED POSTS":
-Calls Workflow 0 GET_ALL_POSTS with statusFilter: "published".
-Only published posts have platform IDs needed for API calls.
-Filters to last 30 days by default (postedAt >= 30 days ago).
-If webhook payload includes postIds, filter to those specific posts only.
-
-STICKY NOTE 5 — named "🔀 SPLIT BY PLATFORM":
-For each post, creates one item per platform where status = published.
-Each item includes: postId, platform, publishedAt, postText (for logging).
-Platform-specific post IDs come from Sheet columns (stored at publish time).
-NOTE: Platform post IDs must be stored at publish time (Workflow 3 update needed).
-
-STICKY NOTE 6 — named "🐦 TWITTER METRICS":
-Twitter API v2: GET /2/tweets/{id}?tweet.fields=public_metrics
-Returns: { public_metrics: { impression_count, like_count, reply_count, retweet_count } }
-Map: impression_count→impressions, like_count→likes, reply_count+retweet_count→shares
-
-STICKY NOTE 7 — named "📸 INSTAGRAM METRICS":
-Graph API: GET /{media-id}/insights?metric=impressions,likes,comments,shares,reach
-Requires: Instagram Business or Creator account + Page connected
-Map fields directly to analytics schema.
-
-STICKY NOTE 8 — named "📘 FACEBOOK METRICS":
-Graph API: GET /{post-id}/insights?metric=post_impressions,post_reactions_like_total,post_comments,post_shares
-Requires: Facebook Page (not personal profile)
-
-STICKY NOTE 9 — named "🧵 THREADS METRICS":
-Threads Insights API: GET /threads/{media-id}/insights?metric=views,likes,replies,reposts
-Available for Professional accounts only.
-
-STICKY NOTE 10 — named "💾 WRITE TO SHEET":
-HTTP POST to Workflow 0 with UPDATE_ANALYTICS action per post/platform.
-Calculate engagement_rate = (likes + comments + shares) / max(impressions, 1) * 100.
-Cap at 100 to handle API anomalies.
-
-STICKY NOTE 11 — named "📞 CALLBACK":
-POST to N8N_APP_CALLBACK_URL with:
-{ "status": "done", "fetched": N, "failed": M, "timestamp": ISO }
-Continue on Fail: true.
-
-STICKY NOTE 12 — named "❌ ERROR HANDLER":
-COMMON ERRORS:
-- 401 → access token expired → refresh OAuth token or re-auth in n8n
-- 429 → rate limit → add Wait node (60s) and retry once
-- 404 → post deleted from platform → set engagementRate = 0, mark fetchedAt
-- No Skool API → skip Skool items silently (filter before API calls)
-
-═══════════════════════════════════════
-NODES
-═══════════════════════════════════════
-
-STEP 1 — Create workflow "Pulse - Analytics Fetch"
-
-STEP 2A — Schedule Trigger node:
-- Trigger Interval: Days, Days Between Triggers: 1
-- Trigger At Hour: 6, Trigger At Minute: 0
-
-STEP 2B — Webhook node "Manual Trigger":
-- HTTP Method: POST, Path: pulse-analytics
-- Response Mode: Using Respond to Webhook Node
-
-STEP 3 — Respond to Webhook "Respond 200" (connected to Webhook trigger only):
-- Response Code: 200, Body: {"received":true,"mode":"manual"}
-
-STEP 4 — Code node "Extract Trigger Config" (connected from BOTH triggers):
-- Mode: Run Once for All Items
-const isWebhook = $input.first().json.body !== undefined;
-const body = isWebhook ? $input.first().json.body : {};
-return [{ json: {
-  postIds: body.postIds || null,
-  platforms: body.platforms || ['twitter','threads','instagram','facebook','skool'],
-  callbackUrl: body.callbackUrl || $vars.N8N_APP_CALLBACK_URL,
-  cutoffDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-} }];
-
-STEP 5 — HTTP Request "Get Published Posts" (connected to "Extract Trigger Config"):
-- Method: POST, URL: ={{ $vars.N8N_SHEET_WEBHOOK_URL }}, Timeout: 15000ms
-- Body: { "action": "GET_ALL_POSTS", "payload": { "statusFilter": "published" } }
-
-STEP 6 — Code node "Filter and Split Posts" (connected to "Get Published Posts"):
-- Mode: Run Once for All Items
-const config = $('Extract Trigger Config').first().json;
-const posts = $input.first().json.posts || [];
-const platforms = ['twitter','threads','instagram','facebook','skool'];
-const items = [];
-posts.forEach(post => {
-  if (config.postIds && !config.postIds.includes(post.id)) return;
-  if (config.cutoffDate && post.postedAt < config.cutoffDate) return;
-  platforms.forEach(platform => {
-    if (!config.platforms.includes(platform)) return;
-    const variant = post.platforms?.[platform];
-    if (variant?.status !== 'published') return;
-    if (platform === 'skool') return; // No Skool API
-    items.push({ json: {
-      postId: post.id,
-      platform,
-      publishedAt: variant.publishedAt,
-      callbackUrl: config.callbackUrl,
-      postText: post.linkedinText?.slice(0, 100),
-    }});
-  });
-});
-return items.length > 0 ? items : [{ json: { noResults: true } }];
-
-STEP 7 — IF node "Has Posts to Fetch":
-- Condition: {{ $json.noResults }} is not true
-
-→ TRUE branch (has posts):
-
-STEP 8 — Switch node "Route by Platform":
-- Value: {{ $json.platform }}
-- Case "twitter"   → output 0
-- Case "threads"   → output 1
-- Case "instagram" → output 2
-- Case "facebook"  → output 3
-
-STEP 9 — TWITTER BRANCH (output 0):
-HTTP Request "Twitter Get Metrics":
-- Method: GET
-- URL: https://api.twitter.com/2/tweets/{{ $json.tweetId }}?tweet.fields=public_metrics
-- Auth: "Twitter - Pulse" (OAuth2 Bearer)
-- Continue on Fail: true
-
-Code node "Parse Twitter Metrics":
-const data = $input.first().json;
-const m = data.data?.public_metrics || {};
-return [{ json: {
-  postId: $('Filter and Split Posts').item.json.postId,
-  platform: 'twitter',
-  callbackUrl: $('Filter and Split Posts').item.json.callbackUrl,
-  metrics: {
-    impressions: m.impression_count || 0,
-    likes: m.like_count || 0,
-    comments: m.reply_count || 0,
-    shares: m.retweet_count || 0,
-    engagementRate: m.impression_count > 0
-      ? Math.min(100, ((m.like_count||0)+(m.reply_count||0)+(m.retweet_count||0)) / m.impression_count * 100)
-      : 0,
+export const PLATFORM_RULES: Record<Platform, PlatformRule> = {
+  twitter: {
+    label: "Twitter / X",
+    color: "#000000",
+    maxChars: 280,
+    threadEnabled: true,
+    maxThreadTweets: 10,
+    imageAspectRatio: "16:9",
+    imageWidth: 1200,
+    imageHeight: 675,
+    hashtagCount: { min: 1, max: 3 },
+    tone: "punchy, hook-first, no filler words, each tweet self-contained",
+    formatRules: "Start with a bold hook. Use short punchy sentences. If thread, number tweets 1/ 2/ etc. No corporate language.",
+    avoidPatterns: ["Let me know your thoughts", "Comment below", "long sentences over 20 words"],
   },
-} }];
-
-STEP 10 — INSTAGRAM BRANCH (output 1):
-HTTP Request "Instagram Get Insights":
-- Method: GET
-- URL: https://graph.facebook.com/v19.0/{{ $json.instagramMediaId }}/insights?metric=impressions,reach,likes,comments,shares&access_token={{ $credentials['Meta - Pulse'].accessToken }}
-- Continue on Fail: true
-
-Code node "Parse Instagram Metrics":
-(similar pattern — extract from insights array by metric name, calculate engagementRate)
-
-STEP 11 — FACEBOOK BRANCH (output 2):
-HTTP Request "Facebook Get Insights":
-- Method: GET
-- URL: https://graph.facebook.com/v19.0/{{ $json.facebookPostId }}/insights?metric=post_impressions,post_reactions_like_total,post_comments,post_shares&access_token={{ $credentials['Meta - Pulse'].accessToken }}
-- Continue on Fail: true
-
-Code node "Parse Facebook Metrics":
-(same pattern)
-
-STEP 12 — THREADS BRANCH (output 3):
-HTTP Request "Threads Get Insights":
-- Method: GET
-- URL: https://graph.threads.net/v1.0/{{ $json.threadsMediaId }}/insights?metric=views,likes,replies,reposts&access_token={{ $credentials['Threads - Pulse'].accessToken }}
-- Continue on Fail: true
-
-Code node "Parse Threads Metrics":
-(same pattern)
-
-STEP 13 — Code node "Merge All Metrics" (connected from all 4 Parse nodes):
-- Mode: Run Once for All Items
-(all items already have postId, platform, metrics — pass through)
-return $input.all().map(item => ({ json: item.json }));
-
-STEP 14 — HTTP Request "Write Metrics to Sheet" (per item):
-- Method: POST, URL: ={{ $vars.N8N_SHEET_WEBHOOK_URL }}, Timeout: 15000ms
-- Body:
-{
-  "action": "UPDATE_ANALYTICS",
-  "payload": {
-    "postId": "={{ $json.postId }}",
-    "platform": "={{ $json.platform }}",
-    "metrics": "={{ $json.metrics }}"
-  }
+  threads: {
+    label: "Threads",
+    color: "#000000",
+    maxChars: 500,
+    threadEnabled: false,
+    maxThreadTweets: null,
+    imageAspectRatio: "1:1",
+    imageWidth: 1080,
+    imageHeight: 1080,
+    hashtagCount: { min: 0, max: 5 },
+    tone: "conversational, casual, like texting a smart friend",
+    formatRules: "Write as if talking to someone directly. Short paragraphs. Casual contractions ok. Can end with a soft question.",
+    avoidPatterns: ["hashtag spam", "overly formal language"],
+  },
+  instagram: {
+    label: "Instagram",
+    color: "#E1306C",
+    maxChars: 2200,
+    threadEnabled: false,
+    maxThreadTweets: null,
+    imageAspectRatio: "1:1",
+    imageWidth: 1080,
+    imageHeight: 1080,
+    hashtagCount: { min: 5, max: 15 },
+    tone: "story-driven, personal, visual-first mindset",
+    formatRules: "Lead with a strong first line (visible before \"more\"). Tell a mini story. Put hashtags at the very end, separated by line breaks. Use line breaks generously.",
+    avoidPatterns: ["link in bio (no links work)", "excessive emojis"],
+  },
+  facebook: {
+    label: "Facebook",
+    color: "#1877F2",
+    maxChars: 63206,
+    threadEnabled: false,
+    maxThreadTweets: null,
+    imageAspectRatio: "16:9",
+    imageWidth: 1200,
+    imageHeight: 630,
+    hashtagCount: { min: 0, max: 3 },
+    tone: "warm, community-oriented, slightly longer form ok",
+    formatRules: "Can be longer than other platforms. End with a direct question to drive comments. Paragraphs over bullet points. Personal tone.",
+    avoidPatterns: ["aggressive CTAs", "spammy hashtags"],
+  },
+  skool: {
+    label: "Skool Community",
+    color: "#00A693",
+    maxChars: 10000,
+    threadEnabled: false,
+    maxThreadTweets: null,
+    imageAspectRatio: "16:9",
+    imageWidth: 1200,
+    imageHeight: 675,
+    hashtagCount: { min: 0, max: 0 },
+    tone: "community discussion starter, teaching mindset, inviting participation",
+    formatRules: "Reframe as a discussion prompt or lesson for the community. Start with \"I want to share...\" or a direct insight. End with a question that invites replies. No hashtags.",
+    avoidPatterns: ["sales language", "hashtags", "external links without context"],
+  },
+  linkedin: {
+    label: "LinkedIn",
+    color: "#0A66C2",
+    maxChars: 3000,
+    threadEnabled: false,
+    maxThreadTweets: null,
+    imageAspectRatio: "1.91:1",
+    imageWidth: 1200,
+    imageHeight: 627,
+    hashtagCount: { min: 0, max: 5 },
+    tone: "professional but personal, insight-driven",
+    formatRules: "Lead with the key insight. Use short paragraphs. End with a question or call-to-action.",
+    avoidPatterns: ["corporate jargon", "humble bragging"],
+  },
 }
-- Continue on Fail: true
-
-STEP 15 — Code node "Build Callback Summary":
-- Mode: Run Once for All Items
-const items = $input.all();
-const fetched = items.filter(i => !i.json.error).length;
-const failed = items.filter(i => i.json.error).length;
-return [{ json: { fetched, failed, timestamp: new Date().toISOString(), callbackUrl: items[0]?.json.callbackUrl } }];
-
-STEP 16 — HTTP Request "Analytics Callback":
-- Method: POST
-- URL: ={{ $json.callbackUrl }}
-- Body: { "status": "done", "fetched": "={{ $json.fetched }}", "failed": "={{ $json.failed }}", "timestamp": "={{ $json.timestamp }}" }
-- Continue on Fail: true
-
-→ FALSE branch (no posts to fetch):
-HTTP Request "Empty Callback":
-- Body: { "status": "done", "fetched": 0, "failed": 0, "message": "No published posts in range" }
-
-STEP 17 — Error Trigger → HTTP Request "Error Callback":
-- Body: { "status": "failed", "error": "={{ $json.message }}" }
-- URL: ={{ $vars.N8N_APP_CALLBACK_URL }}
-- Continue on Fail: true
-
-STEP 18 — WORKFLOW VARIABLES:
-- N8N_SHEET_WEBHOOK_URL: Workflow 0 webhook URL
-- N8N_APP_CALLBACK_URL: https://your-app.com/api/callback/analytics
-
-STEP 19 — CREDENTIALS:
-- "Twitter - Pulse": OAuth2 or API Key (Bearer Token from Twitter Developer Portal)
-- "Meta - Pulse": Facebook App credential with instagram_basic, instagram_manage_insights, pages_read_engagement scopes
-- "Threads - Pulse": Threads API access token (Meta Developer → Threads)
-
-IMPORTANT — Platform Post ID Storage:
-Workflow 4 requires the platform-specific post ID (tweet ID, Instagram media ID, etc.)
-to call the metrics API. Workflow 3 (Publish) must be updated to store these IDs:
-After each platform publish call succeeds, extract the returned post ID and write it
-to a new Sheet column via UPDATE_PLATFORM_VARIANT:
-  { platformPostId: "1234567890" }
-
-Add `platformPostId: string | null` to PlatformVariant type and Sheet schema:
-  [platform]_platform_post_id  — the platform-native ID returned on publish
-
-STEP 20 — Activate the workflow.
-STEP 21 — Return the webhook URL → add to .env.local as N8N_ANALYTICS_WEBHOOK_URL
 ```
 
 ---
 
-### Workflow 3 — Additional Update: Store Platform Post IDs
+## 7. Google Sheet Schema (94 columns)
 
-When each platform publish succeeds, Workflow 3 must extract the platform-native post ID from the API response and write it back to the Sheet. This ID is required by Workflow 4 to fetch analytics.
+Row 1 must contain these exact headers in this exact order:
 
-**After each platform publish HTTP Request node, add:**
-
-Code node "Extract Platform Post ID":
-```javascript
-const response = $input.first().json;
-// Twitter: response.data.id
-// Instagram: response.id
-// Facebook: response.id
-// Threads: response.id
-// Skool: no ID returned
-const platformPostId = response.data?.id || response.id || null;
-return [{ json: { ...$json, platformPostId } }];
+```
+post_id, linkedin_text, linkedin_image_url, posted_at,
+twitter_text, twitter_content_prompt, twitter_image_prompt, twitter_image_url, twitter_hashtags, twitter_status, twitter_generated_at, twitter_scheduled_at, twitter_published_at,
+threads_text, threads_content_prompt, threads_image_prompt, threads_image_url, threads_hashtags, threads_status, threads_generated_at, threads_scheduled_at, threads_published_at,
+instagram_text, instagram_content_prompt, instagram_image_prompt, instagram_image_url, instagram_hashtags, instagram_status, instagram_generated_at, instagram_scheduled_at, instagram_published_at,
+facebook_text, facebook_content_prompt, facebook_image_prompt, facebook_image_url, facebook_hashtags, facebook_status, facebook_generated_at, facebook_scheduled_at, facebook_published_at,
+skool_text, skool_content_prompt, skool_image_prompt, skool_image_url, skool_hashtags, skool_status, skool_generated_at, skool_scheduled_at, skool_published_at,
+twitter_approved_at, twitter_is_edited,
+threads_approved_at, threads_is_edited,
+instagram_approved_at, instagram_is_edited,
+facebook_approved_at, facebook_is_edited,
+skool_approved_at, skool_is_edited,
+twitter_platform_post_id, twitter_impressions, twitter_likes, twitter_comments, twitter_shares, twitter_engagement_rate, twitter_fetched_at,
+threads_platform_post_id, threads_impressions, threads_likes, threads_comments, threads_shares, threads_engagement_rate, threads_fetched_at,
+instagram_platform_post_id, instagram_impressions, instagram_likes, instagram_comments, instagram_shares, instagram_engagement_rate, instagram_fetched_at,
+facebook_platform_post_id, facebook_impressions, facebook_likes, facebook_comments, facebook_shares, facebook_engagement_rate, facebook_fetched_at,
+skool_platform_post_id, skool_impressions, skool_likes, skool_comments, skool_shares, skool_engagement_rate, skool_fetched_at,
+twitter_first_comment, twitter_first_comment_status,
+threads_first_comment, threads_first_comment_status,
+instagram_first_comment, instagram_first_comment_status,
+facebook_first_comment, facebook_first_comment_status,
+skool_first_comment, skool_first_comment_status
 ```
 
-HTTP Request "Store Platform Post ID" (via Workflow 0):
+### Column naming convention
+- App uses **camelCase** internally; Sheet uses **snake_case**
+- `lib/n8n-sheet.ts` handles all conversion on read (snake→camel) and write (camel→snake)
+- `{platform}_hashtags` column stores hashtags as a comma-separated string
+- `{platform}_status` column stores one of: `pending | approved | scheduled | published | failed`
+
+---
+
+## 8. Project File Structure
+
+```
+pulse-repurpose/
+├── app/
+│   ├── layout.tsx                        # Root layout, sidebar nav, Sonner Toaster
+│   ├── page.tsx                          # Redirect to /dashboard
+│   ├── dashboard/
+│   │   └── page.tsx
+│   ├── repurpose/
+│   │   └── page.tsx
+│   ├── calendar/
+│   │   └── page.tsx
+│   ├── analytics/
+│   │   └── page.tsx
+│   ├── settings/
+│   │   └── page.tsx
+│   └── api/
+│       ├── posts/
+│       │   ├── route.ts                  # GET all posts
+│       │   └── [id]/
+│       │       └── route.ts              # GET/PATCH single post
+│       ├── trigger/
+│       │   ├── repurpose/
+│       │   │   └── route.ts              # POST — run skills + fire n8n WF1
+│       │   ├── repurpose/bulk/
+│       │   │   └── route.ts              # POST — bulk repurpose multiple posts
+│       │   └── images/
+│       │       └── route.ts              # POST — fire n8n WF2
+│       ├── callback/
+│       │   ├── repurpose/
+│       │   │   └── route.ts              # POST — n8n calls back when WF1 done
+│       │   ├── images/
+│       │   │   └── route.ts              # POST — n8n calls back when WF2 done
+│       │   ├── publish/
+│       │   │   └── route.ts              # POST — n8n calls back when WF3 done
+│       │   └── analytics/
+│       │       └── route.ts              # POST — n8n writes analytics back
+│       ├── chat/
+│       │   └── route.ts                  # POST — AI chat sidebar (OpenRouter direct)
+│       ├── hashtags/
+│       │   └── route.ts                  # POST — hashtag suggestions
+│       ├── publish/
+│       │   └── route.ts                  # POST — fire n8n WF3
+│       ├── brand-voice/
+│       │   └── route.ts                  # GET/PUT brand voice config
+│       ├── hashtag-bank/
+│       │   ├── route.ts                  # GET/POST hashtag bank
+│       │   └── [id]/
+│       │       └── route.ts              # DELETE single hashtag
+│       ├── evergreen/
+│       │   └── route.ts                  # GET/POST evergreen config
+│       ├── memory/
+│       │   ├── route.ts                  # GET learnings + user profile
+│       │   └── update/
+│       │       └── route.ts              # POST — update memory from cron
+│       ├── heartbeat/
+│       │   └── route.ts                  # GET system health
+│       ├── cron/
+│       │   └── route.ts                  # POST — 8 cron operations (requires CRON_SECRET)
+│       ├── skills/
+│       │   ├── repurpose/
+│       │   │   └── route.ts              # POST — run content skill for one platform
+│       │   ├── carousel/
+│       │   │   └── route.ts              # POST — LinkedIn carousel skill
+│       │   └── platform-prompt/
+│       │       └── route.ts              # POST — build platform prompt payload
+│       ├── content/
+│       │   ├── route.ts                  # GET — list all content folders
+│       │   ├── [postId]/
+│       │   │   └── route.ts              # GET — all platform files for a post
+│       │   └── [postId]/[platform]/
+│       │       └── route.ts              # GET — single platform content file
+│       ├── env-check/
+│       │   └── route.ts                  # GET — check env vars status
+│       ├── test-webhooks/
+│       │   └── route.ts                  # POST — test all 4 n8n webhook URLs
+│       └── docs/
+│           ├── status/
+│           │   └── route.ts              # GET — check stale docs
+│           └── sync/
+│               └── route.ts             # POST — regenerate stale docs
+├── components/
+│   ├── layout/
+│   │   ├── Sidebar.tsx
+│   │   └── TopBar.tsx
+│   ├── dashboard/
+│   │   ├── PostsTable.tsx                # Sortable, filterable table
+│   │   ├── PostRow.tsx
+│   │   ├── StatusBadge.tsx
+│   │   ├── PlatformStatusGrid.tsx
+│   │   ├── PostSlideOver.tsx             # Full post details drawer
+│   │   └── SystemPanel.tsx              # Workflow health + cron status
+│   ├── repurpose/
+│   │   ├── SourcePostPanel.tsx
+│   │   ├── PlatformCard.tsx             # Text editor, hashtags, image preview
+│   │   ├── GenerationStatusPanel.tsx
+│   │   ├── AIChatSidebar.tsx
+│   │   ├── CarouselPreview.tsx          # LinkedIn carousel slide preview
+│   │   └── KeyboardShortcutsDialog.tsx
+│   ├── settings/
+│   │   ├── BrandVoiceForm.tsx
+│   │   ├── ExamplePostsInput.tsx
+│   │   ├── AvoidListInput.tsx
+│   │   ├── TopicPillarsInput.tsx
+│   │   ├── ImageBrandKitForm.tsx        # Visual identity config
+│   │   ├── HashtagBankManager.tsx       # Add, search, filter, bulk import
+│   │   └── EvergreenForm.tsx
+│   ├── calendar/
+│   │   ├── CalendarView.tsx
+│   │   └── GapWarningBadge.tsx
+│   ├── analytics/
+│   │   ├── PlatformSummaryCard.tsx
+│   │   ├── TopPostsChart.tsx
+│   │   └── EngagementMetrics.tsx
+│   └── ui/
+│       ├── LoadingSpinner.tsx
+│       ├── ConfirmDialog.tsx
+│       ├── PlatformIcon.tsx
+│       └── [shadcn components: button, input, textarea, badge, card, label, separator, tabs, select, dialog, alert-dialog, popover, scroll-area]
+├── lib/
+│   ├── env.ts                           # Env var validation
+│   ├── platform-rules.ts                # PLATFORM_RULES constant
+│   ├── anthropic.ts                     # OpenRouter calls (chat, hashtags, image prompts)
+│   ├── platform-skills.ts               # Skill file reading + execution
+│   ├── brand-voice.ts                   # Brand voice profile helpers
+│   ├── n8n.ts                           # Webhook firing helpers
+│   ├── n8n-sheet.ts                     # Sheet CRUD via WF0 webhook
+│   ├── content-store.ts                 # File system content storage
+│   ├── docs-sync.ts                     # Memory/learning file updates
+│   └── utils.ts                         # cn(), format helpers
+├── stores/
+│   ├── postsStore.ts                    # Posts list state
+│   ├── repurposeStore.ts                # Active repurpose session state
+│   └── settingsStore.ts                 # Brand voice + hashtag bank state
+├── types/
+│   └── index.ts                         # All TypeScript types
+├── config/
+│   ├── brand-voice.json                 # Brand voice profile (auto-created if missing)
+│   ├── hashtag-bank.json                # Hashtag collection
+│   ├── evergreen.json                   # Evergreen recycling config
+│   └── recycled-posts.json              # Track recycled post IDs
+├── skills/
+│   ├── repurpose.md                     # Master repurpose skill runbook
+│   ├── cron.md                          # Cron operations documentation
+│   └── platforms/
+│       ├── twitter-content.md
+│       ├── threads-content.md
+│       ├── instagram-content.md
+│       ├── facebook-content.md
+│       ├── skool-content.md
+│       ├── linkedin-carousel-content.md  # Special carousel skill
+│       ├── twitter-image.md
+│       ├── threads-image.md
+│       ├── instagram-image.md
+│       ├── facebook-image.md
+│       └── skool-image.md
+├── memory/
+│   ├── USER.md                          # Creator profile (voice fingerprint, approval patterns)
+│   ├── MEMORY.md                        # Rolling 7-day working memory
+│   ├── learnings.md                     # Accumulated intelligence (append-only)
+│   └── daily/
+│       └── [YYYY-MM-DD].md             # Daily cron logs
+├── content/
+│   └── [postId]/
+│       ├── twitter.md
+│       ├── threads.md
+│       ├── instagram.md
+│       ├── facebook.md
+│       └── skool.md
+├── SOUL.md                              # System identity and principles
+├── Heartbeat.md                         # System status (updated by cron)
+├── .env.local
+└── package.json
+```
+
+---
+
+## 9. Zustand Stores
+
+### postsStore (stores/postsStore.ts)
+```typescript
+interface PostsState {
+  posts: LinkedInPost[]
+  loading: boolean
+  error: string | null
+  fetchPosts: (filters?: { status?: PostStatus; platform?: Platform; fromDate?: string; toDate?: string }) => Promise<void>
+  updateVariantStatus: (postId: string, platform: Platform, status: PostStatus) => void  // optimistic
+}
+```
+
+### repurposeStore (stores/repurposeStore.ts)
+```typescript
+interface RepurposeState {
+  activePost: LinkedInPost | null
+  variants: Record<Platform, RepurposeVariantDraft>
+  generationStatus: GenerationStatus
+  imageGenerationStatus: GenerationStatus
+  activePlatform: Platform | null
+  chatHistories: Record<Platform, ChatMessage[]>
+  dirtyPlatforms: Set<Platform>   // platforms user has manually edited — prevents overwrite during polling
+
+  setActivePost: (post: LinkedInPost) => void
+  initVariantsFromPost: (post: LinkedInPost) => void
+  setGenerationStatus: (status: GenerationStatus) => void
+  setImageGenerationStatus: (status: GenerationStatus) => void
+  setActivePlatform: (platform: Platform) => void
+  setVariantText: (platform: Platform, text: string) => void         // marks platform dirty
+  setVariantTextFromAI: (platform: Platform, text: string) => void   // does NOT mark dirty
+  setVariantApproved: (platform: Platform, approved: boolean) => void
+  setVariantHashtags: (platform: Platform, hashtags: string[]) => void
+  setVariantImageUrl: (platform: Platform, url: string) => void
+  setVariantImagePrompt: (platform: Platform, prompt: string) => void
+  setSuggestedHashtags: (platform: Platform, hashtags: string[]) => void
+  addChatMessage: (platform: Platform, message: ChatMessage) => void
+  clearDirtyPlatform: (platform: Platform) => void
+}
+```
+
+**Key behavior:** `dirtyPlatforms` prevents polling from overwriting text the user is actively editing. When polling detects new generated text for a platform, only update if that platform is NOT in `dirtyPlatforms`.
+
+### settingsStore (stores/settingsStore.ts)
+```typescript
+interface SettingsState {
+  brandVoice: BrandVoiceProfile | null
+  hashtagBank: HashtagBankEntry[]
+  loadingBrandVoice: boolean
+  loadingHashtagBank: boolean
+  error: string | null
+  fetchBrandVoice: () => Promise<void>
+  fetchHashtagBank: () => Promise<void>
+  setBrandVoice: (profile: BrandVoiceProfile) => void
+  setHashtagBank: (entries: HashtagBankEntry[]) => void
+}
+```
+
+---
+
+## 10. API Routes (detailed)
+
+### GET /api/posts
+Calls n8n WF0 (GET_ALL_POSTS). Supports query params: `status`, `platform`, `fromDate`, `toDate`. Returns `LinkedInPost[]`.
+
+### GET /api/posts/[id]
+Calls n8n WF0 (GET_POST_BY_ID). Used for polling during generation.
+
+### PATCH /api/posts/[id]
+Updates a platform variant field in the Sheet via WF0 (UPDATE_PLATFORM_VARIANT). Also writes to local content file. Returns updated post.
+
+### POST /api/trigger/repurpose
+1. Read brand voice profile from config
+2. Read learnings.md and USER.md
+3. For each selected platform (500ms stagger to avoid rate limits), call `/api/skills/repurpose` to execute the platform skill via OpenRouter and get a structured `ContentPromptOutput`
+4. Build `ContentRepurposeWebhookPayload` with all platform prompts
+5. Write prompts to Sheet via WF0 (WRITE_CONTENT_PROMPTS)
+6. Set all platform statuses to `generating_text` via WF0
+7. POST to `N8N_CONTENT_REPURPOSE_WEBHOOK_URL`
+8. Return 200 immediately — caller polls
+
+Body: `{ postId: string; platforms: Platform[] }`
+
+### POST /api/trigger/repurpose/bulk
+Same as above but accepts multiple postIds. Processes them sequentially.
+Body: `{ postIds: string[]; platforms: Platform[] }`
+
+### POST /api/trigger/images
+1. Read brand voice profile
+2. Call `generateImagePrompts()` from `lib/anthropic.ts` (single OpenRouter call, all platforms at once)
+3. Build platform-specific `ImagePromptOutput` objects using PLATFORM_RULES for dimensions
+4. Write image prompts to Sheet via WF0 (WRITE_IMAGE_PROMPTS)
+5. POST to `N8N_IMAGE_REPURPOSE_WEBHOOK_URL`
+
+Body: `{ postId: string; platforms: Platform[] }`
+
+### POST /api/callback/repurpose
+Called by n8n WF1 when text generation is done. Body: `N8nCallbackPayload`. Simply returns 200 — the UI polls `/api/posts/[id]` to pick up changes.
+
+### POST /api/callback/images
+Called by n8n WF2 when image generation is done. Body: `N8nCallbackPayload`. Returns 200.
+
+### POST /api/callback/publish
+Called by n8n WF3 after publishing. Updates post status in stores. Body: `{ postId: string; platform: Platform; status: PostStatus; platformPostId?: string; publishedAt?: string }`.
+
+### POST /api/callback/analytics
+Called by n8n analytics workflow. Writes engagement metrics to Sheet via WF0 (UPDATE_ANALYTICS). Body: `{ postId: string; platform: Platform; metrics: { impressions, likes, comments, shares, engagementRate, fetchedAt } }`.
+
+### POST /api/chat
+Interactive chat for content editing. Calls `chatWithAI()` from `lib/anthropic.ts`.
+Body: `{ messages: ChatMessage[]; currentVariantText: string; platform: Platform; instruction: string }`
+Returns: `{ updatedText: string; explanation: string }`
+
+### POST /api/hashtags
+Generate hashtag suggestions via OpenRouter. Calls `generateHashtagSuggestions()`.
+Body: `{ postText: string; platform: Platform; existingHashtags: string[]; count: number }`
+Returns: `string[]`
+
+### POST /api/publish
+Fire n8n WF3. Sets platform status to `scheduled` (if scheduledAt provided) or `approved` before returning.
+Body: `PublishWebhookPayload`
+
+### GET /api/brand-voice
+Read `config/brand-voice.json`. Return default profile if file doesn't exist.
+
+### PUT /api/brand-voice
+Write to `config/brand-voice.json`. Set `lastUpdated` to now.
+
+### GET /api/hashtag-bank
+Read `config/hashtag-bank.json`.
+
+### POST /api/hashtag-bank
+Add entry to `config/hashtag-bank.json`. Assign UUID as `id`.
+
+### DELETE /api/hashtag-bank/[id]
+Remove entry by id from `config/hashtag-bank.json`.
+
+### GET /api/evergreen
+Return `{ config: EvergreenConfig; recycledPostIds: string[] }` from `config/evergreen.json` and `config/recycled-posts.json`.
+
+### POST /api/evergreen
+Update `config/evergreen.json`.
+
+### GET /api/memory
+Return `{ learnings: string; userProfile: string; workingMemory: string }` — raw contents of the three memory files.
+
+### POST /api/memory/update
+Called by cron. Accepts partial updates to memory files. Appends to learnings.md (never overwrites), updates USER.md sections, updates MEMORY.md (rolling window).
+
+### GET /api/heartbeat
+Return parsed Heartbeat.md as JSON + basic health checks (can reach n8n Sheet webhook, env vars present).
+
+### POST /api/cron
+Requires `Authorization: Bearer {CRON_SECRET}` header. Body: `{ operation: CronOperation }`.
+
+**8 cron operations:**
+```typescript
+type CronOperation =
+  | 'fetch_linkedin_posts'          // Sync new LinkedIn posts to Sheet
+  | 'identify_repurpose_eligible'   // Find posts within 7 days for auto-repurposing
+  | 'generate_pending'              // Auto-generate content for eligible posts
+  | 'evaluate_evergreen'            // Find high-engagement posts for recycling
+  | 'trigger_recycling'             // Reset qualified posts to approved for re-publish
+  | 'fetch_analytics'               // Pull latest engagement metrics
+  | 'update_memory'                 // Update learnings.md + USER.md + MEMORY.md
+  | 'rebuild_heartbeat'             // Regenerate Heartbeat.md from current state
+```
+
+Each operation runs independently. The full daily cron runs all 8 sequentially. Log each operation result to `memory/daily/[date].md`.
+
+### POST /api/skills/repurpose
+Execute a platform content skill via OpenRouter.
+Body: `{ platform: Platform; linkedinText: string; postId: string }`
+1. Read skill file from `skills/platforms/{platform}-content.md`
+2. Read brand voice, learnings.md, USER.md
+3. Build prompt from skill template
+4. Call OpenRouter
+5. Parse and return `ContentPromptOutput`
+
+### POST /api/skills/carousel
+Execute the LinkedIn carousel skill.
+Body: `{ linkedinText: string; postId: string }`
+Returns `CarouselPromptOutput`.
+
+### POST /api/skills/platform-prompt
+Build a complete platform prompt payload without executing it. Used for testing/previewing prompts.
+
+### GET /api/content
+List all post folders in `content/` directory.
+
+### GET /api/content/[postId]
+Return all platform content files for a post as an object keyed by platform.
+
+### GET /api/content/[postId]/[platform]
+Return a single platform content file (raw markdown with frontmatter).
+
+### GET /api/env-check
+Return status of all env vars (present/missing, never return values).
+
+### POST /api/test-webhooks
+Ping all 4 n8n webhook URLs with a test payload and return their response status.
+
+### GET /api/docs/status
+Check which skill files and docs are stale (based on modification time vs last sync).
+
+### POST /api/docs/sync
+Trigger regeneration of stale documentation.
+
+---
+
+## 11. Content File Storage (lib/content-store.ts)
+
+Each generated platform variant is also written to a markdown file:
+
+`content/{postId}/{platform}.md`
+
+```markdown
+---
+postId: abc123
+platform: twitter
+status: approved
+generatedAt: 2025-01-01T00:00:00Z
+approvedAt: 2025-01-02T00:00:00Z
+publishedAt: null
+scheduledAt: null
+isEdited: false
+imageUrl: null
+hashtags: ["solopreneurship", "productivity"]
+---
+
+Full tweet text or thread here...
+```
+
+Files are written on generation (via callback) and updated on status changes. The Sheet remains source of truth — these files are for auditing and debugging.
+
+---
+
+## 12. LLM Integration (lib/anthropic.ts)
+
+All direct LLM calls use OpenRouter's OpenAI-compatible endpoint:
+`https://openrouter.ai/api/v1/chat/completions`
+
+Headers required:
+- `Authorization: Bearer {OPENROUTER_API_KEY}`
+- `Content-Type: application/json`
+- `HTTP-Referer: {NEXT_PUBLIC_APP_URL}`
+- `X-Title: Pulse Repurpose`
+
+Default model: `openrouter/auto` (overrideable via `OPENROUTER_MODEL` env var)
+
+**Four exported functions:**
+
+#### `executePrompt({ system, user, maxTokens?, model? }): Promise<string>`
+Generic single-turn prompt helper. Used by skill routes.
+
+#### `generateImagePrompts({ linkedinText, brandVoice, platforms }): Promise<Partial<Record<Platform, string>>>`
+Single call that returns all platform image prompts as JSON. Used by `/api/trigger/images`.
+
+#### `chatWithAI({ messages, currentVariantText, platform, brandVoice, instruction }): Promise<{ updatedText: string; explanation: string }>`
+Powers the AI chat sidebar. Returns structured JSON with updated text + explanation of change.
+
+#### `generateHashtagSuggestions({ postText, platform, brandVoice, existingHashtags, count }): Promise<string[]>`
+Returns array of hashtag strings (no # prefix).
+
+**JSON parsing pattern** (use everywhere):
+```typescript
+const jsonMatch =
+  text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/)
+const jsonStr = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : text
+```
+
+Remove control characters before parsing: `jsonStr.replace(/[\x00-\x1F\x7F]/g, ' ')`
+
+**Error handling:** Log full response on empty content. Never throw unhandled errors — return safe fallbacks.
+
+---
+
+## 13. n8n Sheet Client (lib/n8n-sheet.ts)
+
+All Sheet operations go through n8n WF0 webhook. Never call Google Sheets API directly from the app.
+
+```typescript
+// Generic typed call
+async function callSheet<A extends SheetAction>(
+  request: SheetWebhookRequest<A>
+): Promise<unknown>
+
+// Exported helper functions
+export async function getAllPosts(filters?: {...}): Promise<LinkedInPost[]>
+export async function getPostById(postId: string): Promise<LinkedInPost | null>
+export async function updatePlatformVariant(postId: string, platform: Platform, variant: Partial<PlatformVariant>): Promise<void>
+export async function updateMultiplePlatforms(postId: string, variants: Partial<Record<Platform, Partial<PlatformVariant>>>): Promise<void>
+export async function writeContentPrompts(postId: string, prompts: Partial<Record<Platform, string>>): Promise<void>
+export async function writeImagePrompts(postId: string, prompts: Partial<Record<Platform, string>>): Promise<void>
+export async function updateStatus(postId: string, platform: Platform, status: PostStatus): Promise<void>
+export async function updateAnalytics(postId: string, platform: Platform, metrics: {...}): Promise<void>
+export async function updateFirstComment(postId: string, platform: Platform, firstComment: string | null, firstCommentStatus?: string | null): Promise<void>
+```
+
+**Conversion:** Sheet returns snake_case — convert to camelCase on read. App sends camelCase — convert to snake_case on write. Hashtags stored as comma-separated string in Sheet — parse to array on read, join on write.
+
+---
+
+## 14. n8n Webhook Firing (lib/n8n.ts)
+
+```typescript
+export async function fireContentRepurposeWebhook(payload: ContentRepurposeWebhookPayload): Promise<void>
+export async function fireImageRepurposeWebhook(payload: ImageRepurposeWebhookPayload): Promise<void>
+export async function firePublishWebhook(payload: PublishWebhookPayload): Promise<void>
+```
+
+Use `axios.post()` with a 30s timeout. Log errors but don't throw — let callers handle.
+
+---
+
+## 15. Skills System (lib/platform-skills.ts)
+
+Skills are markdown files in `skills/platforms/`. They contain system prompt templates with `{placeholder}` syntax.
+
+**Reading a skill:**
+```typescript
+export async function readSkillFile(platform: Platform, type: 'content' | 'image'): Promise<string>
+```
+
+**Executing a skill:**
+```typescript
+export async function executePlatformSkill(params: {
+  platform: Platform
+  linkedinText: string
+  postId: string
+  brandVoice: BrandVoiceProfile
+  learnings: string
+  userProfile: string
+}): Promise<ContentPromptOutput>
+```
+
+Fills template placeholders with actual values, calls `executePrompt()`, parses JSON response as `ContentPromptOutput`.
+
+**Staggered execution for bulk:** When running multiple platform skills in sequence, add a 500ms delay between each to avoid OpenRouter free-tier rate limits.
+
+---
+
+## 16. Memory System Files
+
+### Heartbeat.md (root)
+Updated by cron `rebuild_heartbeat` operation. Format:
+```markdown
+# Heartbeat — [timestamp]
+
+## System status
+- Last cron run: [timestamp]
+- Sheet webhook: [reachable/unreachable]
+- Content repurpose webhook: [reachable/unreachable]
+- Image repurpose webhook: [reachable/unreachable]
+- Publish webhook: [reachable/unreachable]
+
+## Content pipeline status
+- Total posts in Sheet: [n]
+- Pending repurpose: [n]
+- Approved and scheduled: [n]
+- Published this week: [n]
+
+## Open flags
+[Any anomalies or errors from last cron run]
+```
+
+### memory/USER.md
+Creator profile — updated by learning system when approval patterns are observed. Never auto-reset.
+```markdown
+# USER.md — Creator Profile
+
+## Identity
+- Name: [filled from settings or first use]
+- Primary platform: LinkedIn
+- Content creation style: [observed]
+- Posting frequency: [observed]
+
+## Voice fingerprint
+- Sentence length: [observed]
+- Opening style: [observed]
+- Closing style: [observed]
+- Recurring phrases: [observed]
+- Emotional register: [observed]
+
+## Platform behavior
+- Platforms regularly approved: [observed]
+- Platforms frequently edited: [observed]
+- Platforms often skipped: [observed]
+
+## Approval patterns
+- Fast approvals: [observed]
+- Frequently edited: [observed]
+- Frequently rejected: [observed]
+
+## Content preferences
+- Best performing topics: [from analytics]
+- Topics that underperform: [from analytics]
+- Preferred hashtag style: [observed]
+```
+
+### memory/MEMORY.md
+Rolling 7-day working memory. Entries older than 7 days are removed on each cron update.
+```markdown
+# Working Memory
+
+[timestamp] Starting repurpose for [postId]
+[timestamp] Repurpose complete for [postId]. Platforms: [list]. Awaiting approval.
+[timestamp] [postId] twitter: approved without edits.
+[timestamp] [postId] instagram: user shortened caption. Learning captured.
+```
+
+### memory/learnings.md
+Append-only. Accumulated intelligence from all observations.
+```markdown
+# Learnings
+
+## Approval patterns
+
+### Twitter
+[date] [postId]: thread format with 4 tweets approved without edits. Hook started with a question.
+
+### Instagram
+[date] [postId]: user shortened from 8 lines to 5. Always trims middle paragraphs.
+
+## Content performance
+[date] AI tools topic posts consistently outperform productivity posts on Twitter (avg 3.2% vs 1.8% ER).
+
+## Platform-specific tone adjustments
+### Threads
+[date] Posts that start with "Hot take:" get high engagement.
+
+## Hashtag intelligence
+[date] #solopreneurship outperforms #entrepreneur on Instagram (2x ER).
+```
+
+### memory/daily/[YYYY-MM-DD].md
+Auto-generated by cron at end of each run.
+
+---
+
+## 17. Config Files
+
+### config/brand-voice.json (default)
 ```json
 {
-  "action": "UPDATE_PLATFORM_VARIANT",
-  "payload": {
-    "postId": "={{ $json.postId }}",
-    "platform": "={{ $json.platform }}",
-    "variant": { "platformPostId": "={{ $json.platformPostId }}" }
-  }
+  "toneDescriptors": [],
+  "writingStyle": "",
+  "topicPillars": [],
+  "avoidList": [],
+  "examplePosts": [],
+  "imageBrandKit": {
+    "primaryColor": "#7C3AED",
+    "secondaryColor": "#A78BFA",
+    "visualStyle": [],
+    "photographyStyle": [],
+    "moodKeywords": [],
+    "avoidInImages": []
+  },
+  "lastUpdated": ""
 }
 ```
 
-Add `platformPostId: string | null` to:
-- `PlatformVariant` type in `types/index.ts`
-- Sheet column per platform: `[platform]_platform_post_id` (add between error and impressions columns in COLUMN_MAP)
+### config/hashtag-bank.json (default)
+`[]`
+
+### config/evergreen.json (default)
+```json
+{
+  "enabled": false,
+  "engagementThreshold": 3,
+  "recycleIntervalDays": 90,
+  "platforms": ["twitter", "threads"]
+}
+```
+
+### config/recycled-posts.json (default)
+`[]`
 
 ---
 
-## Final notes for Claude Code
+## 18. Skills Files
 
-- **MANDATORY AFTER EVERY FEATURE CHANGE**: (1) Write a CHANGELOG.md entry (date, type, files changed, summary, docs affected). (2) Call `POST /api/docs/sync` with the entry, changed files list, and change type. (3) Verify all affected docs returned `"updated"` — retry any that returned `"failed"`. (4) If the sync route doesn't exist yet, write the CHANGELOG entry manually and the route will catch up when built. A task is NOT complete until this step is done.
-- Use `async/await` throughout. No `.then()` chains.
-- All API routes must handle errors and return appropriate HTTP status codes (400 for bad input, 500 for server errors, with `{ error: string }` body).
-- Never expose API keys to the client. All Anthropic calls (chat, hashtags, image prompts) go through Next.js API routes. The app does NOT need a fal.ai key or Google service account credentials — both are handled exclusively by n8n.
-- Do NOT install `googleapis` — it is not needed.
-- Install `gray-matter` (`npm install gray-matter`) for reading/writing frontmatter in content `.md` files.
-- Install `minimatch` (`npm install minimatch`) for glob pattern matching in the doc impact map.
-- Platform skill files in `skills/platforms/` must exist before the repurpose skill can run. Generate all 10 files at project init. The auto-documentation system will keep them updated as learnings accumulate. The only data client is `lib/n8n-sheet.ts` which uses plain HTTP via Axios.
-- The `config/` directory should be gitignored since it contains the user's personal brand voice data.
-- Add `config/brand-voice.json` and `config/hashtag-bank.json` to `.gitignore`.
-- Do NOT gitignore the `memory/` or `skills/` directories — these are the app's intelligence layer and should be committed. The `memory/daily/` folder may be gitignored if the user prefers to keep daily logs local-only.
-- SOUL.md, Heartbeat.md, skills/repurpose.md, and skills/cron.md should be committed as they are part of the app's core identity. memory/learnings.md and memory/USER.md are personal data — give the user the option to gitignore them.
-- Use Zod schemas to validate all API request bodies AND all incoming callback payloads from n8n.
-- All user-facing strings should be consistent and professional. No placeholder text like "TODO" or "coming soon" in the final UI.
-- The app is single-user, no auth needed.
-- Add a `POST /api/test-webhooks` dev-only route that fires test payloads to all four n8n webhook URLs (`sheet`, `repurpose`, `images`, `publish`) and reports which responded with 2xx — the Sheet webhook test should send a `GET_ALL_POSTS` action with a limit of 1 row to verify the full read path works.
+### skills/repurpose.md
+The master repurpose skill runbook — documents the 8-step process (pre-flight, build prompt, fire webhook, poll, fire images, capture learnings, approval monitoring, update Heartbeat). Also documents: memory injection priority order (`learnings.md > USER.md > brand-voice.json > platform-rules.ts`), success criteria (all 5 text variants written, 3/5 images generated), and error handling (timeout → log, LLM error → retry once with simplified prompt, image failure → log and continue).
+
+### skills/platforms/twitter-content.md
+Contains:
+- Platform identity (280 chars, thread up to 10, 1-3 hashtags)
+- Full system prompt template with `{brandVoice.*}` and `{learnings}` and `{userProfile.*}` placeholders
+- User prompt template
+- Output contract: JSON matching `ContentPromptOutput`
+- `hookVariants`: 2-3 alternative first lines (≤60 chars each), scroll-stopping, for the hook picker UI
+- Learnings injection rules (which sections of learnings.md to inject)
+- Output validation rules (char limit per tweet, thread separation by `\n\n`)
+
+### skills/platforms/threads-content.md
+Same structure. 500 chars, no thread, 0-5 hashtags, casual tone.
+
+### skills/platforms/instagram-content.md
+Same structure. 2200 chars, 5-15 hashtags, story-driven, hook-first, hashtags at very end.
+
+### skills/platforms/facebook-content.md
+Same structure. Longer form ok, end with question, personal tone.
+
+### skills/platforms/skool-content.md
+Same structure. Discussion prompt format, no hashtags, community teaching tone.
+
+### skills/platforms/linkedin-carousel-content.md
+Special skill for carousel format. Returns `CarouselPromptOutput` with:
+- `coverSlide: { headline, subheadline }`
+- `slides: CarouselSlide[]` (each with `headline` + `body`)
+- `closingSlide: { headline, cta }`
+- `caption: string`
+- `hashtags: string[]`
+
+### skills/platforms/[platform]-image.md (5 files)
+Each image skill returns `ImagePromptOutput`. Includes:
+- Platform image specs (dimensions, aspect ratio)
+- Brand kit integration instructions
+- Rules: no text overlays, match brand tone and color palette
+- `negativePrompt` instructions
+
+### skills/cron.md
+Documents all 8 cron operations with inputs, outputs, and memory update rules.
+
+---
+
+## 19. Pages
+
+### /dashboard
+**Stats bar** (top row):
+- Total posts in Sheet
+- Posts with all 5 platforms repurposed
+- Posts published this week
+- Posts pending approval
+- Average engagement rate (across all published posts)
+- Top performing platform (highest avg ER)
+
+**SystemPanel** (collapsible):
+- n8n webhook health status (green/red dot per webhook)
+- Last cron run timestamp + status
+- Open flags from Heartbeat.md
+
+**PostsTable**:
+- Columns: Date, LinkedIn Preview (first 80 chars), Platform Status (5 badges), Actions
+- Platform status badges: colored dot per platform, click to see variant status
+- Inline approve/reject buttons on pending variants
+- Sort by: date (default: newest first), status, engagement
+- Filter by: platform, status, date range
+- Click any row → PostSlideOver
+
+**PostSlideOver** (right drawer):
+- Full LinkedIn post text + image
+- Per-platform variants with full text, hashtags, image, status
+- Approve/reject/schedule actions
+- Link to Repurpose page for that post
+
+### /repurpose
+**SourcePostPanel** (left, 1/3 width):
+- LinkedIn post selector (search + recent posts list)
+- Display selected post: full text, image, posted date
+- "Repurpose" button → triggers generation for all 5 platforms
+
+**Platform Cards** (right, 2/3 width, 2×3 grid — 5 platforms + LinkedIn carousel):
+- Platform icon + name + char count indicator
+- Text editor (textarea, character count, warns at limit)
+- Hook variants (chip row under textarea): 2-3 alternative first-line options, click to swap into text
+- Hashtag pills (add/remove, AI suggest button)
+- Image preview (thumbnail, "Generate Image" button)
+- First comment field (expandable)
+- Status badge + Approve button + Reject button
+- Visual post preview toggle (shows how post will look)
+
+**GenerationStatusPanel**:
+- Shows progress per platform during generation
+- "Generating text..." → "Generating images..." → "Done"
+- Per-platform spinner/check/error indicators
+
+**AIChatSidebar** (right panel, slides in when "Chat" button clicked on a platform card):
+- Context: current variant text for the active platform
+- Message history
+- Input: type instruction (e.g. "make it shorter", "add more punch to the hook")
+- AI returns updated text + one-line explanation
+- "Apply" button applies to the platform card text
+
+**CarouselPreview** (appears when LinkedIn Carousel card is active):
+- Slide-by-slide preview with cover, content slides, closing slide
+- Shows headline, subheadline, body per slide
+
+**KeyboardShortcutsDialog**:
+- `Cmd+R` = trigger repurpose
+- `Cmd+A` = approve all
+- `Cmd+G` = generate images
+- `?` = show shortcuts dialog
+
+### /calendar
+**CalendarView** (FullCalendar, month view default, can switch to week/day):
+- Events colored by platform
+- Click event → mini popover with post preview + quick actions (view, publish, reschedule)
+- Drag-drop to reschedule (updates scheduledAt in Sheet)
+- Filter by platform (toggle buttons)
+
+**GapWarningBadge**:
+- Appears in header when a platform hasn't been posted to in >7 days
+- Shows: platform icon + "X days since last post"
+- If a topic pillar is also missing: "No [pillar] content in X days"
+- Clickable → filters to that platform
+
+### /analytics
+**Platform Summaries** (top row, one card per platform):
+- Total posts published
+- Total impressions / likes / comments / shares
+- Average engagement rate
+- Trend arrow (vs last 30 days)
+
+**Top Performing Posts** (table):
+- Ranked by engagement rate
+- Columns: date, platform, preview, impressions, ER
+
+**Best Posting Times**:
+- Heatmap grid: hour of day (x) × day of week (y)
+- Color intensity = average engagement rate
+
+**Overall Trends** (line chart):
+- Weekly engagement rate over time, per platform
+
+### /settings
+Three tabs: Brand Voice | Hashtag Bank | Evergreen
+
+**Brand Voice tab:**
+- Tone descriptors (tag input: add/remove chips)
+- Writing style (textarea)
+- Topic pillars (tag input)
+- Avoid list (tag input)
+- Example posts (add/remove textarea fields, min 3 recommended)
+- Image Brand Kit section:
+  - Primary color (hex input + color swatch)
+  - Secondary color (hex input + color swatch)
+  - Visual styles (tag input: e.g. "minimalist", "bold")
+  - Photography styles (tag input: e.g. "product", "lifestyle")
+  - Mood keywords (tag input: e.g. "confident", "modern")
+  - Avoid in images (tag input: e.g. "people", "text overlays")
+- Save button
+
+**Hashtag Bank tab:**
+- Search input
+- Filter by platform / topic pillar
+- Table: hashtag, platforms (badges), pillar, usage count, last used, delete button
+- Add hashtag form (hashtag, platforms checkboxes, pillar select)
+- Bulk import (paste comma-separated or newline-separated list)
+- Usage tracking: each time a hashtag is approved in a variant, increment usage count
+
+**Evergreen tab:**
+- Toggle: Enable evergreen recycling
+- Engagement threshold (number input, %)
+- Recycle interval (number input, days)
+- Platforms to recycle (multi-select checkboxes)
+- Current evergreen queue (posts that qualify, with their ER)
+- Save button
+
+---
+
+## 20. Layout
+
+### Sidebar (fixed 240px, left)
+Navigation links:
+- Dashboard (grid icon)
+- Repurpose (refresh icon)
+- Calendar (calendar icon)
+- Analytics (bar chart icon)
+- Settings (settings icon)
+
+Brand name "Pulse" at top. Active link highlighted. Footer: system status dot (green = all webhooks OK, red = issue).
+
+### TopBar
+Page title (matches current route). Breadcrumbs where needed. Right side: system status if issue detected.
+
+### Root layout
+```typescript
+// Geist font, dark mode class on html, Toaster (Sonner) at root
+// Fixed sidebar + main content area with overflow scroll
+```
+
+---
+
+## 21. n8n Workflows
+
+Four workflows to build/import. Create JSON files at `n8n-workflows/`:
+- `workflow-0-sheet-operations.json`
+- `workflow-1-content-repurpose.json`
+- `workflow-2-image-repurpose.json`
+- `workflow-3-publish.json`
+
+### WF0 — Sheet Operations
+**Webhook path:** `pulse-sheet-ops`
+
+Handles all Google Sheets CRUD via a single webhook. Routes `action` field:
+- **Read path** (`GET_ALL_POSTS`, `GET_POST_BY_ID`): reads all rows via GSheets node, filters in JavaScript
+- **Write path** (all `UPDATE_*` / `WRITE_*`): finds row by `post_id`, updates specific columns
+
+Each action maps to specific column patterns (`{platform}_text`, `{platform}_status`, etc.).
+
+### WF1 — Content Repurpose
+**Webhook path:** `pulse-content-repurpose`
+
+1. Receive `ContentRepurposeWebhookPayload` (pre-built per-platform prompt pairs)
+2. Split into one item per platform using SplitInBatches
+3. For each: call OpenRouter API with the system+user prompt pair
+4. Extract generated text and hashtags from LLM response
+5. Write to Google Sheet (`{platform}_text`, `{platform}_hashtags`, `{platform}_status = pending`, `{platform}_generated_at`)
+6. When all platforms done: POST to `callbackUrl` with `{ postId, status: 'done' }`
+
+**OpenRouter model:** `openrouter/auto` by default. Configure as Header Auth credential.
+
+### WF2 — Image Repurpose
+**Webhook path:** `pulse-image-repurpose`
+
+1. Receive `ImageRepurposeWebhookPayload` (per-platform `ImagePromptOutput` objects)
+2. Split by platform
+3. For each: call ImageRouter API (OpenAI-compatible image endpoint)
+   - Model: `gpt-image-1` (configurable)
+   - Image size from `styleDirectives.width × styleDirectives.height`
+4. Extract image URL from response
+5. Write to Sheet (`{platform}_image_url`)
+6. When all done: POST to `callbackUrl`
+
+**ImageRouter credential:** Header Auth with `Authorization: Bearer YOUR_KEY`.
+
+### WF3 — Publish
+**Webhook path:** `pulse-publish`
+
+Route by `platform`:
+
+| Platform | API | Notes |
+|---|---|---|
+| Twitter/X | Twitter API v2 (OAuth 1.0a) | Upload image via `upload.twitter.com` first if imageUrl present |
+| Threads | Meta Graph API | Two-step: create container → publish |
+| Instagram | Meta Graph API | Two-step: create container → publish. Requires image for feed posts |
+| Facebook | Meta Graph API | Text-only or photo post |
+| Skool | Placeholder | No public API — placeholder node, update manually |
+
+After publishing:
+1. Write `{platform}_status = published`, `{platform}_published_at`, `{platform}_platform_post_id` to Sheet
+2. If `firstComment` present: wait 30 seconds, post comment to same post, update `{platform}_first_comment_status`
+3. POST to `callbackUrl`
+
+**n8n Variables needed (Settings → Variables):**
+- `THREADS_USER_ID`
+- `INSTAGRAM_USER_ID`
+- `FACEBOOK_PAGE_ID`
+- `SKOOL_COMMUNITY_ID`
+
+**Credentials needed:**
+- `Google Sheets OAuth2` (all 4 workflows)
+- `OpenRouter API Key` — Header Auth (`Authorization: Bearer KEY`) — WF1
+- `ImageRouter API Key` — Header Auth (`Authorization: Bearer KEY`) — WF2
+- `Twitter OAuth 1.0a` — WF3
+- `Meta Access Token` — Header Auth — WF3
+- `Skool Session Cookie` — Header Auth (`Cookie: session=VALUE`) — WF3
+
+**Google Sheets configuration (all workflows):**
+Replace in every GSheets node:
+- `YOUR_SPREADSHEET_ID` → actual Sheet ID from URL
+- `YOUR_GOOGLE_CREDENTIAL_ID` → n8n credential ID
+- `Sheet1` → actual tab name
+
+---
+
+## 22. Component Implementation Details
+
+### StatusBadge
+Map statuses to colors:
+- `pending` → gray
+- `approved` → blue
+- `scheduled` → purple
+- `published` → green
+- `failed` → red
+
+### PlatformCard (key behaviors)
+- Character count updates live; turns amber at 80% of limit, red at 100%
+- Hook variants display as clickable chips below the textarea; clicking replaces the first line of the text
+- Hashtag pills: click to remove; "Suggest" button calls `/api/hashtags` and shows inline suggestions to add
+- Image preview: 100px thumbnail; "Generate Image" button fires `/api/trigger/images` for just this platform
+- First comment field: expandable textarea (hidden by default, "Add first comment" toggle)
+- Visual preview button: renders platform-appropriate mockup of how the post will look
+- Approve button: calls PATCH /api/posts/[id] with status=approved, plays subtle success animation
+- Reject button: calls PATCH with status=failed, clears generated content
+
+### PostsTable (sorting behavior)
+- Default sort: `postedAt` descending (newest first)
+- Click column header to sort; click again to reverse
+- Sort arrows visible on active column only
+
+### AIChatSidebar (state persistence)
+- Chat history persists in `repurposeStore.chatHistories` keyed by platform
+- Switching platforms shows that platform's history
+- "Clear" button clears current platform history
+
+---
+
+## 23. Error Handling Patterns
+
+1. **OpenRouter errors:** Catch + return safe fallback (empty array, empty string). Log with `console.error`. Never crash route.
+2. **n8n webhook failures:** Log error, return 500 with descriptive message. UI shows toast with "Workflow trigger failed, check n8n".
+3. **Sheet not found / wrong postId:** Return 404 from API route.
+4. **Config files missing:** Auto-create with defaults on first read.
+5. **LLM JSON parse failures:** Use the robust regex pattern (code fences → JSON object → raw text). Remove control characters before parse.
+6. **Image generation failure:** Log and continue — do not block text approval. Show image card as "Not generated".
+7. **Cron operation failure:** Log to daily memory file. Update Heartbeat.md open flags. Continue remaining operations (don't abort full cron run).
+
+---
+
+## 24. Polling Logic
+
+During content/image generation, the UI polls `/api/posts/[id]` every **3 seconds**.
+
+```typescript
+// In repurpose page
+useEffect(() => {
+  if (generationStatus !== 'generating_text' && generationStatus !== 'generating_images') return
+  const interval = setInterval(async () => {
+    const updated = await fetch(`/api/posts/${activePost.id}`)
+    const post = await updated.json()
+    // For each platform, if NOT dirty and new text is available, update store
+    for (const platform of PLATFORMS) {
+      if (!dirtyPlatforms.has(platform) && post.platforms[platform].text) {
+        setVariantTextFromAI(platform, post.platforms[platform].text)
+      }
+    }
+    // Check if all platforms have text — if so, set status to done
+    if (allPlatformsHaveText(post)) {
+      setGenerationStatus('done')
+      clearInterval(interval)
+    }
+  }, 3000)
+  return () => clearInterval(interval)
+}, [generationStatus, activePost])
+```
+
+Timeout: after 5 minutes with no completion, set status to `failed` and show error toast.
+
+---
+
+## 25. Brand Voice System (lib/brand-voice.ts)
+
+```typescript
+// Read brand voice profile — returns default if config file missing
+export async function getBrandVoice(): Promise<BrandVoiceProfile>
+
+// Save brand voice profile
+export async function saveBrandVoice(profile: BrandVoiceProfile): Promise<void>
+
+// Build a system prompt string from the brand voice profile
+// Used by chatWithAI and skill execution
+export function buildBrandVoiceSystemPrompt(profile: BrandVoiceProfile): string
+```
+
+`buildBrandVoiceSystemPrompt` format:
+```
+You are writing as a personal brand. Here is the creator's voice profile:
+
+TONE: {toneDescriptors.join(", ")}
+WRITING STYLE: {writingStyle}
+TOPIC PILLARS: {topicPillars.join(", ")}
+NEVER USE: {avoidList.join(", ")}
+
+EXAMPLE POSTS (these represent the ideal voice — study them carefully):
+---
+{examplePosts[0]}
+---
+{examplePosts[1]}
+---
+[...]
+```
+
+---
+
+## 26. Utility Functions (lib/utils.ts)
+
+```typescript
+import { clsx, type ClassValue } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+
+// Convert snake_case to camelCase (for Sheet → app)
+export function snakeToCamel(str: string): string
+
+// Convert camelCase to snake_case (for app → Sheet)
+export function camelToSnake(str: string): string
+
+// Convert all keys of an object from snake_case to camelCase (recursive)
+export function deepSnakeToCamel<T>(obj: unknown): T
+
+// Format date for display
+export function formatDate(iso: string): string  // "Jan 15, 2025"
+
+// Truncate text with ellipsis
+export function truncate(text: string, maxLength: number): string
+```
+
+---
+
+## 27. Key Implementation Notes
+
+1. **No Prisma, no PostgreSQL.** All data is in Google Sheets via n8n.
+2. **No user auth.** Single-creator personal tool, no login/session needed.
+3. **`@anthropic-ai/sdk` is installed but not used.** All LLM calls use `fetch` against OpenRouter.
+4. **The app builds prompts; n8n runs them.** For repurposing, app runs skills locally to build the structured prompt payload, then hands it to n8n. n8n does the actual OpenRouter call that generates the final post content.
+5. **500ms stagger between platform skill executions.** Prevents rate limiting on free-tier OpenRouter.
+6. **`dirtyPlatforms` in repurposeStore.** Prevents polling from overwriting user edits. Critical for UX.
+7. **Hashtag bank usage tracking.** When a user approves a variant, increment usage count for each hashtag in that variant.
+8. **Config files auto-create.** All `config/*.json` files are created with defaults if they don't exist on first read.
+9. **All memory files use append-only for learnings.** Never overwrite `learnings.md`. For `MEMORY.md`, prune entries older than 7 days on each update.
+10. **Skills priority order.** In prompt construction: `learnings.md > USER.md > brand-voice.json > platform-rules.ts`. Observed truth beats configured defaults.
+11. **Image Brand Kit feeds into image skills.** When building image prompts, inject `imageBrandKit.primaryColor`, `visualStyle`, `moodKeywords`, and `avoidInImages` into the image skill prompt.
+12. **Carousel is a separate skill.** LinkedIn Carousel is treated as a 6th variant (alongside the 5 platform variants). It has its own card in the repurpose UI and its own skill file.
+13. **First comment flow.** Users can set a `firstComment` per platform variant. n8n WF3 posts it 30 seconds after the main post. Status tracked as `pending → published | failed`.
+14. **Gap warnings compute from Sheet data.** When loading calendar, compute days since last published post per platform. If >7 days, show GapWarningBadge. If a topic pillar is missing from recent posts, surface that too.
+15. **Evergreen recycling.** When `enabled`, cron operation `evaluate_evergreen` finds posts with `engagementRate >= threshold` and `publishedAt >= recycleIntervalDays ago`. Marks them eligible. `trigger_recycling` resets their platform statuses to `approved` so they appear in the publishing queue. Write their IDs to `config/recycled-posts.json` to prevent double-recycling.
+16. **Hook variants UI.** Each generated platform variant includes 2-3 alternative opening lines. Show them as clickable chips below the textarea in PlatformCard. Clicking a chip replaces just the first line of the existing text.
+17. **Visual post preview.** Each PlatformCard has a "Preview" toggle that shows a rough platform-native mockup (black card for Twitter, gradient for Instagram, etc.) with the current text rendered inside it.
+
+---
+
+## 28. shadcn/ui Components to Install
+
+Run: `npx shadcn@latest init` then install these components:
+```
+button input textarea badge card label separator tabs select dialog alert-dialog popover scroll-area
+```
+
+Use the `zinc` color palette and `default` style.
+
+---
+
+## 29. Tailwind Config
+
+Standard Next.js 14 + shadcn setup. Add `tailwindcss-animate` plugin.
+
+Content paths:
+```javascript
+content: [
+  "./pages/**/*.{ts,tsx}",
+  "./components/**/*.{ts,tsx}",
+  "./app/**/*.{ts,tsx}",
+  "./src/**/*.{ts,tsx}",
+],
+```
+
+---
+
+## 30. Initial State / Defaults
+
+On first run with no data:
+- Dashboard shows empty state: "No posts yet. Add posts to your Google Sheet to get started."
+- Settings has empty brand voice with instructional placeholder text
+- Hashtag bank is empty
+- Evergreen is disabled
+- All memory files contain templates with `[filled by system]` placeholders
+- Heartbeat.md shows "System not yet initialized — run first cron to populate"
+
+---
+
+## 31. Complete Feature Checklist
+
+Check off every feature when implementing:
+
+**Core:**
+- [ ] Multi-platform repurposing (LinkedIn → Twitter, Threads, Instagram, Facebook, Skool)
+- [ ] Skill-based AI prompt generation (platform-specific skill files)
+- [ ] n8n webhook integration (4 workflows)
+- [ ] Google Sheets as data source via n8n WF0
+- [ ] Content file storage (content/{postId}/{platform}.md)
+- [ ] Polling during generation (3s interval, 5min timeout)
+- [ ] Dirty platform tracking (no overwrite on active edits)
+
+**Generation:**
+- [ ] Platform skills executed locally, prompts sent to n8n
+- [ ] Hook variants (2-3 alternative first lines, clickable chips)
+- [ ] Image generation via n8n WF2 + ImageRouter
+- [ ] Carousel skill for LinkedIn
+- [ ] Image Brand Kit feeds into image prompts
+- [ ] First comment field per platform variant
+- [ ] 500ms stagger between platform skill executions
+
+**AI & Chat:**
+- [ ] AI chat sidebar (per-platform, persists chat history)
+- [ ] chatWithAI returns { updatedText, explanation }
+- [ ] Hashtag suggestions via OpenRouter
+- [ ] Robust JSON parsing (code fences → object regex → fallback)
+
+**Memory & Learning:**
+- [ ] SOUL.md (system identity)
+- [ ] Heartbeat.md (updated by cron)
+- [ ] memory/USER.md (creator profile)
+- [ ] memory/MEMORY.md (7-day rolling window)
+- [ ] memory/learnings.md (append-only)
+- [ ] memory/daily/ (cron logs)
+- [ ] Learnings injected into all generation prompts
+- [ ] Priority order respected: learnings > USER > brand-voice > platform-rules
+
+**Cron (8 operations):**
+- [ ] fetch_linkedin_posts
+- [ ] identify_repurpose_eligible
+- [ ] generate_pending
+- [ ] evaluate_evergreen
+- [ ] trigger_recycling
+- [ ] fetch_analytics
+- [ ] update_memory
+- [ ] rebuild_heartbeat
+- [ ] CRON_SECRET protection
+- [ ] Log to memory/daily/ on each run
+
+**Dashboard:**
+- [ ] Stats bar (6 metrics)
+- [ ] SystemPanel with webhook health
+- [ ] PostsTable with sorting (newest first default)
+- [ ] PostsTable with filtering (platform, status, date range)
+- [ ] PostSlideOver
+- [ ] Inline approve/reject on pending variants
+
+**Repurpose page:**
+- [ ] Post selector
+- [ ] 5 platform cards + carousel card
+- [ ] Character count with limit warnings
+- [ ] Hook variant chips
+- [ ] Hashtag pills + AI suggest
+- [ ] Image preview + generate button
+- [ ] First comment field
+- [ ] Visual post preview toggle
+- [ ] AI chat sidebar
+- [ ] GenerationStatusPanel
+- [ ] Keyboard shortcuts
+
+**Calendar:**
+- [ ] FullCalendar (month/week/day views)
+- [ ] Platform-colored events
+- [ ] Drag-drop rescheduling
+- [ ] Gap warnings
+
+**Analytics:**
+- [ ] Platform summary cards
+- [ ] Top performing posts
+- [ ] Best posting times heatmap
+- [ ] Overall trends chart
+
+**Settings:**
+- [ ] Brand voice form (all fields)
+- [ ] Image Brand Kit form
+- [ ] Hashtag bank (add, delete, search, filter, bulk import)
+- [ ] Hashtag usage tracking
+- [ ] Evergreen configuration form
+- [ ] Evergreen queue display
+
+**Infrastructure:**
+- [ ] env.ts validation
+- [ ] All 4 config JSON files with defaults
+- [ ] All memory files with templates
+- [ ] All 13 skill files
+- [ ] n8n workflow JSONs (4 files)
+- [ ] n8n README with setup instructions
+- [ ] /api/env-check endpoint
+- [ ] /api/test-webhooks endpoint
+
+---
+
+## 32. Build Order
+
+Recommended implementation order to avoid circular dependencies:
+
+1. `types/index.ts` — all types
+2. `lib/env.ts` — env validation
+3. `lib/platform-rules.ts` — PLATFORM_RULES constant
+4. `lib/utils.ts` — cn(), converters
+5. `config/*.json` — default config files
+6. `memory/*.md` + `SOUL.md` + `Heartbeat.md` — memory files
+7. `skills/**/*.md` — all skill files
+8. `lib/brand-voice.ts` — brand voice helpers
+9. `lib/n8n-sheet.ts` — Sheet CRUD
+10. `lib/n8n.ts` — webhook firing
+11. `lib/anthropic.ts` — OpenRouter calls
+12. `lib/platform-skills.ts` — skill execution
+13. `lib/content-store.ts` — file storage
+14. `lib/docs-sync.ts` — memory updates
+15. `stores/*.ts` — Zustand stores
+16. API routes (start with `/api/posts`, `/api/brand-voice`, then triggers, then callbacks)
+17. shadcn/ui components
+18. Shared components (StatusBadge, PlatformIcon, LoadingSpinner)
+19. Layout (Sidebar, TopBar, root layout)
+20. Dashboard page + components
+21. Repurpose page + components
+22. Calendar page + components
+23. Analytics page + components
+24. Settings page + components
+25. n8n workflow JSON files
+26. n8n README
+
+---
+
+> Build this exactly as specified. Do not simplify, do not add features not listed, do not substitute technologies. Every detail above is intentional.
