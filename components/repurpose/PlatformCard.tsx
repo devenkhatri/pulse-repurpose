@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react"
 import { toast } from "sonner"
 import axios from "axios"
+import { Plus, X } from "lucide-react"
 import { PlatformIcon } from "@/components/shared/PlatformIcon"
 import { StatusBadge } from "@/components/dashboard/StatusBadge"
 import { ApproveButton } from "@/components/repurpose/ApproveButton"
@@ -60,6 +61,15 @@ export function PlatformCard({
   const charCount = text.length
   const isOverLimit = charCount > rules.maxChars
 
+  // First comment — visible by default for LinkedIn/Facebook/Skool, hidden for Twitter/Instagram/Threads
+  const FIRST_COMMENT_VISIBLE_DEFAULT = new Set<Platform>(["linkedin", "facebook", "skool"])
+  const FIRST_COMMENT_SUPPORTED = new Set<Platform>(["linkedin", "facebook", "skool", "threads", "twitter", "instagram"])
+  const [firstComment, setFirstComment] = useState<string>(platformVariant.firstComment ?? "")
+  const [showFirstComment, setShowFirstComment] = useState<boolean>(
+    FIRST_COMMENT_VISIBLE_DEFAULT.has(platform)
+  )
+  const hasAutoFilledRef = useRef(false)
+
   // Auto-resize textarea
   useEffect(() => {
     const ta = textareaRef.current
@@ -74,6 +84,25 @@ export function PlatformCard({
       if (saveResetRef.current) clearTimeout(saveResetRef.current)
     }
   }, [])
+
+  // LinkedIn auto-fill: populate first comment with hashtags + any URLs from text
+  useEffect(() => {
+    if (platform !== "linkedin") return
+    if (hasAutoFilledRef.current) return
+    if (platformVariant.firstComment) {
+      hasAutoFilledRef.current = true
+      return
+    }
+    if (!text) return
+    const urls = text.match(/https?:\/\/[^\s]+/g) ?? []
+    const parts = [
+      ...hashtags.map((h) => `#${h}`),
+      ...urls,
+    ]
+    if (parts.length === 0) return
+    setFirstComment(parts.join(" "))
+    hasAutoFilledRef.current = true
+  }, [platform, text, hashtags, platformVariant.firstComment])
 
   if (isTextGenerating && !platformVariant.text) {
     return (
@@ -170,6 +199,7 @@ export function PlatformCard({
         postId,
         platform,
         scheduledAt: scheduledAt || null,
+        firstComment: firstComment || null,
       })
       toast.success(
         scheduledAt
@@ -226,6 +256,18 @@ export function PlatformCard({
     setVariantHashtags(platform, updated)
     setNewHashtag("")
     void saveHashtags(updated)
+  }
+
+  const handleSaveFirstComment = async (value: string) => {
+    if (value === (platformVariant.firstComment ?? "")) return
+    try {
+      await axios.patch(`/api/posts/${postId}`, {
+        platform,
+        variant: { firstComment: value || null },
+      })
+    } catch {
+      toast.error("Failed to save first comment")
+    }
   }
 
   const isPublished =
@@ -398,6 +440,88 @@ export function PlatformCard({
               existingHashtags={hashtags}
               maxHashtags={rules.hashtagCount.max}
             />
+          )}
+        </div>
+      )}
+
+      {/* First comment section */}
+      {FIRST_COMMENT_SUPPORTED.has(platform) && (
+        <div
+          className="space-y-1"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {!showFirstComment ? (
+            !isPublished && (
+              <button
+                onClick={() => setShowFirstComment(true)}
+                className="flex items-center gap-1 text-xs text-[#555555] hover:text-[#888888] transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                Add first comment
+              </button>
+            )
+          ) : (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-[#555555] uppercase tracking-wider">
+                  First Comment
+                  {platform === "linkedin" && (
+                    <span className="ml-1 normal-case text-[#444444]">— hashtags + links</span>
+                  )}
+                </p>
+                {!FIRST_COMMENT_VISIBLE_DEFAULT.has(platform) && !isPublished && (
+                  <button
+                    onClick={() => setShowFirstComment(false)}
+                    className="text-[#555555] hover:text-[#888888] transition-colors"
+                    aria-label="Hide first comment"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+              {isPublished ? (
+                firstComment || platformVariant.firstComment ? (
+                  <div className="space-y-1">
+                    <p className="text-xs text-[#555555] bg-[#111111] rounded-lg px-3 py-2 leading-relaxed">
+                      {firstComment || platformVariant.firstComment}
+                    </p>
+                    {platformVariant.firstCommentStatus && (
+                      <p className={cn(
+                        "text-xs",
+                        platformVariant.firstCommentStatus === "published" && "text-emerald-400",
+                        platformVariant.firstCommentStatus === "failed" && "text-red-400",
+                        platformVariant.firstCommentStatus === "pending" && "text-[#555555]",
+                      )}>
+                        First comment:{" "}
+                        {platformVariant.firstCommentStatus === "published" && "posted ✓"}
+                        {platformVariant.firstCommentStatus === "failed" && "failed"}
+                        {platformVariant.firstCommentStatus === "pending" && "pending"}
+                      </p>
+                    )}
+                  </div>
+                ) : null
+              ) : (
+                <>
+                  <textarea
+                    value={firstComment}
+                    onChange={(e) => setFirstComment(e.target.value)}
+                    onBlur={(e) => void handleSaveFirstComment(e.target.value)}
+                    placeholder={
+                      platform === "linkedin"
+                        ? "Hashtags and links to post as first comment..."
+                        : "Add a first comment to post ~30s after publishing..."
+                    }
+                    rows={3}
+                    className="w-full bg-[#111111] text-[#F5F5F5] text-xs rounded-lg p-3 resize-none outline-none focus:ring-1 border border-[#2A2A2A] focus:border-[#7C3AED] focus:ring-[#7C3AED]/30 leading-relaxed transition-colors"
+                  />
+                  {firstComment && (
+                    <p className="text-xs text-[#444444]">
+                      {firstComment.length} chars · posted ~30s after publish
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
           )}
         </div>
       )}

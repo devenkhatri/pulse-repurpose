@@ -33,6 +33,9 @@ export interface PlatformVariant {
   shares: number | null
   engagementRate: number | null     // (likes+comments+shares) / impressions * 100
   fetchedAt: string | null          // ISO date string — when analytics were last fetched
+  // First comment fields — Session 13
+  firstComment: string | null       // Comment to post ~30s after publish
+  firstCommentStatus: string | null // 'pending' | 'published' | 'failed' | null
 }
 
 export interface BrandVoiceProfile {
@@ -140,6 +143,7 @@ export interface PublishWebhookPayload {
   sheetRowId: string
   postId: string
   callbackUrl: string               // App's /api/callback/publish endpoint
+  firstComment: string | null       // Optional first comment to post after publish
 }
 
 // n8n → App callback (after content or image generation is done)
@@ -176,6 +180,7 @@ export type SheetAction =
   | 'WRITE_IMAGE_PROMPTS'
   | 'UPDATE_STATUS'
   | 'UPDATE_ANALYTICS'
+  | 'UPDATE_FIRST_COMMENT'
 
 export interface SheetWebhookRequest<A extends SheetAction = SheetAction> {
   action: A
@@ -225,6 +230,12 @@ export interface SheetActionPayload {
       engagementRate: number
       fetchedAt: string
     }
+  }
+  UPDATE_FIRST_COMMENT: {
+    postId: string
+    platform: Platform
+    firstComment: string | null
+    firstCommentStatus?: string | null
   }
 }
 

@@ -240,6 +240,29 @@ export async function updateAnalytics(
 }
 
 /**
+ * Write first comment text and/or status for a single platform variant.
+ * Called after the user saves a first comment, or by the publish callback
+ * once the comment has been posted/failed.
+ */
+export async function updateFirstComment(
+  postId: string,
+  platform: Platform,
+  firstComment: string | null,
+  firstCommentStatus?: string | null
+): Promise<void> {
+  await sheetRequest(
+    "UPDATE_FIRST_COMMENT",
+    {
+      postId,
+      platform,
+      firstComment,
+      ...(firstCommentStatus !== undefined ? { firstCommentStatus } : {}),
+    },
+    10000
+  )
+}
+
+/**
  * Lightweight status update — used by publish flow callbacks.
  * Optionally sets publishedAt and error.
  */

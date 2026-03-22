@@ -22,6 +22,7 @@ const PublishSchema = z.object({
   postId: z.string().min(1),
   platform: PlatformSchema,
   scheduledAt: z.string().nullable().default(null),
+  firstComment: z.string().nullable().optional().default(null),
 })
 
 // ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const { postId, platform, scheduledAt } = parseResult.data
+    const { postId, platform, scheduledAt, firstComment } = parseResult.data
 
     // 1. Fetch post from Sheet
     const post = await getPostById(postId)
@@ -83,6 +84,7 @@ export async function POST(req: NextRequest) {
       sheetRowId: post.id,
       postId,
       callbackUrl: `${env.NEXT_PUBLIC_APP_URL}/api/callback/publish`,
+      firstComment: firstComment ?? variant.firstComment ?? null,
     }
 
     // 4. Fire publish webhook

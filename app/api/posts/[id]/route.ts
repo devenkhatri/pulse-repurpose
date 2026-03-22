@@ -39,6 +39,8 @@ const PlatformVariantPatchSchema = z.object({
   approvedAt: z.string().nullable().optional(),
   isEdited: z.boolean().optional(),
   error: z.string().nullable().optional(),
+  firstComment: z.string().nullable().optional(),
+  firstCommentStatus: z.string().nullable().optional(),
 })
 
 // PATCH body: update one or more platform variants for a post
